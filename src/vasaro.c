@@ -4,6 +4,7 @@
 #include "raygui.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CALC_NORMALS_WHEN_GENERATE false
 
@@ -417,7 +418,7 @@ void regenerate()
 
 int main()
 {
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
     InitWindow(screen_w, screen_h, "Vasaro");
     resize(screen_w, screen_h);
 
@@ -475,38 +476,42 @@ void UpdateDrawFrame()
 
     static float modelRotationX = 45;
     static float cameraHeight = 150;
+    static bool validModelClick = false;
 
-    // Move model
+    if (validModelClick)
     {
-        static float speedX = 0;
-        if (IsMouseButtonDown(0))
+        // Move model
         {
-            Vector2 delta = GetMouseDelta();
-            if (fabs(delta.x) < 5) speedX = 0;
-            else speedX = delta.x;
+            static float speedX = 0;
+            if (IsMouseButtonDown(0))
+            {
+                Vector2 delta = GetMouseDelta();
+                if (fabs(delta.x) < 5) speedX = 0;
+                else speedX = delta.x;
 
-            if (speedX > 40) speedX = 40;
-            else if (speedX < -40) speedX = -40;
+                if (speedX > 40) speedX = 40;
+                else if (speedX < -40) speedX = -40;
 
-            modelRotationX += delta.x*1.0f/4;
-            cameraHeight += delta.y*1.0f;
+                modelRotationX += delta.x*1.0f/4;
+                cameraHeight += delta.y*1.0f;
 
-            if (cameraHeight > 200) cameraHeight = 200;
-            if (cameraHeight < -200) cameraHeight = -200;
+                if (cameraHeight > 200) cameraHeight = 200;
+                if (cameraHeight < -200) cameraHeight = -200;
 
-        }
-        else
-        {
-            modelRotationX += speedX*1.0f/4;
+            }
+            else
+            {
+                modelRotationX += speedX*1.0f/4;
 
-            float delta = 20*GetFrameTime();
-            if (speedX < 0) delta *= -1;
+                float delta = 20*GetFrameTime();
+                if (speedX < 0) delta *= -1;
 
-            if (delta > speedX) speedX = 0;
-            else speedX -= delta;
+                if (delta > speedX) speedX = 0;
+                else speedX -= delta;
 
-            if (fabs(speedX) < 0.1)
-                speedX = 0;
+                if (fabs(speedX) < 0.1)
+                    speedX = 0;
+            }
         }
     }
 
@@ -536,14 +541,14 @@ void UpdateDrawFrame()
 
         ClearBackground((Color){25, 46,61, 255});
 
-        // Draw UI
-
         {
             BeginMode3D(camera);
             DrawModelEx(model, (Vector3){0,0,0}, (Vector3){0,1,0}, modelRotationX, (Vector3){1,1,1}, colors[1]);
             //DrawModel(model, (Vector3){0,0,0}, 1, colors[1]);
             EndMode3D();
         }
+
+        // Draw UI
 
         // --- ACTIONS
         const int GUI_SPACING = 15;
@@ -555,6 +560,45 @@ void UpdateDrawFrame()
         if (GuiButton((Rectangle){GUI_SPACING*2, GUI_SPACING + 20 + GUI_SPACING*2 + 30, 180-15*2, 30}, "#2# EXPORT MODEL"))
         {
 
+            uint32_t        triCount    = model.meshes[0].vertexCount / 3;
+            unsigned int    FILE_SIZE   = 80 + sizeof(uint32_t) + (sizeof(float)*3 + sizeof(float)*9 + sizeof(uint16_t)) * triCount;
+
+            // Clear file content
+            char *content = calloc(1, FILE_SIZE);
+
+            // Add a signature
+            strcpy(content, "Made with vasaro-web. https://andreafontana.it/vasaro-web/");
+
+            // Number of triangles
+            *((uint32_t*)(&content[80])) = triCount;
+
+            // Vertices of current mesh
+            float *vertices = model.meshes[0].vertices;
+            for(size_t i = 0; i < triCount; i++)
+            {
+                // A couple of shortcuts
+                float *base = (float*)&content[80 + sizeof(uint32_t) + i*(sizeof(float)*3 + sizeof(float)*9 + sizeof(uint16_t))];
+                float *vbase = &vertices[i*9];
+
+                // Normals are ignored by design
+                base[0] = 0;
+                base[1] = 0;
+                base[2] = 0;
+
+                // Switching XYZ axes to match stl editors
+                base[3] = vbase[0];
+                base[4] = vbase[2];
+                base[5] = vbase[1];
+                base[6] = vbase[6];
+                base[7] = vbase[8];
+                base[8] = vbase[7];
+                base[9] = vbase[3];
+                base[10] = vbase[5];
+                base[11] = vbase[4];
+            }
+
+            SaveFileData("model.stl", content, FILE_SIZE);
+            emscripten_run_script("saveFile();");
         }
 
         // About Vasaro
@@ -591,17 +635,14 @@ void UpdateDrawFrame()
 
         if (GuiButton((Rectangle){GUI_SPACING*2 + 30 + 10, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#9#"))
         {
-
         }
 
         if (GuiButton((Rectangle){GUI_SPACING*2 + 30*2 + 10*2, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#44#"))
         {
-
         }
 
         if (GuiButton((Rectangle){GUI_SPACING*2 + 30*3 + 10*3, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#45#"))
         {
-
         }
 
         const char* lv = "LAYER #1;LAYER #2";
@@ -609,10 +650,11 @@ void UpdateDrawFrame()
         selectedLayer = GuiListView((Rectangle){GUI_SPACING*2, NOISE_TOP + 20 + GUI_SPACING*2 + 30, 180-30, screen_h - GUI_SPACING - NOISE_TOP - 20 - GUI_SPACING - 30*2}, lv, &a, selectedLayer);
 
 
+        if (IsMouseButtonPressed(0))
+            validModelClick = GetMousePosition().x > 180;
         // VISIBLE
 
         // INVISIBLE
-
         //DrawText(s, 190, 200, 20, (Color){200,200,100,100});
 
     EndDrawing();

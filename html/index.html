@@ -8,6 +8,7 @@
     <meta name="apple-touch-fullscreen" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <script src="FileSaver.js"></script>
     <style>
         #canvas {
             position: absolute;
@@ -76,6 +77,15 @@
         {
             started = true;
             resize(last_w, last_h);
+        }
+
+        function saveFile()
+        {
+            var blob = new Blob([FS.readFile("model.stl")], {
+                type: "model/stl",
+            });
+            saveAs(blob, "vasaro-" + ((new Date()).getTime()/100).toString(16) + ".stl");
+            FS.unlink("model.stl");
         }
 
     </script>
