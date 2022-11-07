@@ -242,7 +242,7 @@ printf("TIME #-5: %f\n", GetTime());
             {
                 if (!v.noise[j].enabled) continue;
 
-                float delta = snoise4
+                float delta = 1+snoise4
                 (
                     0.02*v.radius*cos(2*PI*xx/(v.resolution-1)),
                     0.02*v.radius*sin(2*PI*xx/(v.resolution-1)),
@@ -572,7 +572,7 @@ void UpdateDrawFrame()
                     if (speedX > 40) speedX = 40;
                     else if (speedX < -40) speedX = -40;
 
-                    modelRotationX += delta.x*1.0f/4;
+                    modelRotationX += delta.x*1.0f/3.5;
                     cameraHeight += delta.y*1.0f;
 
                     if (cameraHeight > 200) cameraHeight = 200;
@@ -624,7 +624,10 @@ void UpdateDrawFrame()
 
         {
             BeginMode3D(camera);
-            DrawModelEx(model, (Vector3){0,0,0}, (Vector3){0,1,0}, modelRotationX, (Vector3){1,1,1}, colors[v.color]);
+
+            DrawGrid(10, 19);
+
+            DrawModelEx(model, (Vector3){0,0,0}, (Vector3){0,1,0}, 0, (Vector3){1,1,1}, colors[v.color]);
             //DrawModel(model, (Vector3){0,0,0}, 1, colors[1]);
             EndMode3D();
         }
