@@ -16,7 +16,7 @@ build/raylib/%.o : ext/raylib/src/%.c
 build/libraylib.a: $(RAYLIB_OBJs)
 	emar rcs build/libraylib.a $(RAYLIB_OBJs)
 
-build/vasaro.o : src/vasaro.c src/rlights.h src/hashmap.h src/gui_vasaro.h src/noises/opensimplexnoise.h src/noises/simplexnoise.h
+build/vasaro.o : src/vasaro.c src/rlights.h src/hashmap.h src/noises/opensimplexnoise.h src/noises/simplexnoise.h
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB -Iext/raylib/src/ -Iext/raygui/src/
 
 build/hashmap.o : src/hashmap.c src/hashmap.h
