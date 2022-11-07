@@ -1,7 +1,5 @@
 .DEFAULT_GOAL := vasaro-web
 
-OBJs = build/hashmap.o build/vasaro.o build/noises/opensimplexnoise.o build/noises/simplexnoise.o build/libraylib.a
-
 RAYLIB_OBJs = \
 	build/raylib/rcore.o build/raylib/rshapes.o build/raylib/rtextures.o build/raylib/rtext.o \
 	build/raylib/rmodels.o build/raylib/utils.o build/raylib/raudio.o build/raylib/gui/raygui.o
@@ -18,14 +16,20 @@ build/raylib/%.o : ext/raylib/src/%.c
 build/libraylib.a: $(RAYLIB_OBJs)
 	emar rcs build/libraylib.a $(RAYLIB_OBJs)
 
-build/%.o : src/%.c
+build/vasaro.o : src/vasaro.c src/rlights.h src/hashmap.h src/gui_vasaro.h src/noises/opensimplexnoise.h src/noises/simplexnoise.h
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB -Iext/raylib/src/ -Iext/raygui/src/
 
-build/noises/%.o: src/noises/%.c
+build/hashmap.o : src/hashmap.c src/hashmap.h
+	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB -Iext/raylib/src/ -Iext/raygui/src/
+
+build/opensimplexnoise.o: src/noises/opensimplexnoise.c src/noises/opensimplexnoise.h
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
 
-vasaro-web: prebuild $(OBJs)
-	emcc -o html/vasaro.html $(OBJs) -Os -Wall -I. -L. -sALLOW_MEMORY_GROWTH -s ASSERTIONS=1 -s USE_GLFW=3 -s TOTAL_MEMORY=67108864 -s FORCE_FILESYSTEM=1 -DPLATFORM_WEB -s EXPORTED_RUNTIME_METHODS=["cwrap"] -s EXPORTED_FUNCTIONS='["_main", "_resize"]' --preload-file resources@resources
+build/simplexnoise.o: src/noises/simplexnoise.c src/noises/simplexnoise.h
+	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
+
+vasaro-web: prebuild build/libraylib.a build/vasaro.o build/simplexnoise.o build/opensimplexnoise.o build/hashmap.o
+	emcc -o html/vasaro.html build/*.o build/libraylib.a -Os -Wall -I. -L. -sALLOW_MEMORY_GROWTH -s ASSERTIONS=1 -s USE_GLFW=3 -s TOTAL_MEMORY=67108864 -s FORCE_FILESYSTEM=1 -DPLATFORM_WEB -s EXPORTED_RUNTIME_METHODS=["cwrap"] -s EXPORTED_FUNCTIONS='["_main", "_resize"]' --preload-file resources@resources
 
 clean:
 	rm -rf build/*
