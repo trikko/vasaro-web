@@ -15,16 +15,20 @@
 #include "noises/opensimplexnoise.h"
 #include "noises/simplexnoise.h"
 
-
-
 int screen_w = 640;
-int screen_h = 640;
+int screen_h = 480;
 
 int new_screen_w = 640;
-int new_screen_h = 640;
+int new_screen_h = 480;
 
 int isPreviewEnabled = 1;
-int  selectedLayer = 0;
+int selectedLayer = 0;
+
+float lastDur = 0;
+
+Vector2 ancModel = (Vector2){ 50, 0 };
+Vector2 ancSettings = (Vector2){50, 168 };
+Vector2 ancProfile = (Vector2){ 50, 0};
 
 void emscripten_run_script(const char *script);
 void emscripten_set_main_loop(void (*func)(), int fps, int simulate_infinite_loop);
@@ -35,16 +39,20 @@ Light   light;
 Model   model;
 
 enum {
-    LAY_BUTTON_EXPORT = 0,
-    LAY_BUTTON_NEW,
-    LAY_WINDOW_MODEL,
-    LAY_WINDOW_SETTINGS,
-    LAY_COMBO_COLORS,
+    LAY_WINDOW_SETTINGS = 0,
     LAY_TEXT_RADIUS,
     LAY_TEXT_HEIGHT,
     LAY_TEXT_POINTS,
     LAY_TEXT_LAYERH,
     LAY_CHECKBOX_FAST,
+    LAY_PROFILE_GROUP,
+    LAY_BUTTON_PROFILE_THICKNESS,
+    LAY_SCROLL_PROFILE_0, LAY_SCROLL_PROFILE_1, LAY_SCROLL_PROFILE_2, LAY_SCROLL_PROFILE_3, LAY_SCROLL_PROFILE_4,
+    LAY_SCROLL_PROFILE_5, LAY_SCROLL_PROFILE_6, LAY_SCROLL_PROFILE_7, LAY_SCROLL_PROFILE_8, LAY_SCROLL_PROFILE_9,
+    LAY_RENDERING_GROUP,
+    LAY_COMBO_COLORS,
+    LAY_SMOOTH,
+    LAY_AUTOREGEN,
     LAY_COUNT
 }
 LayoutRects;
@@ -90,13 +98,16 @@ typedef struct {
     int32_t    resolution;     // 3032
     int32_t    layerHeight;    // 0.2
 
+    int32_t     profile[10];
+    int32_t     profileDepth;
+
     bool        toUpdate;
     Noise       noise[MAX_NOISES];
 
     size_t      color;
 } Vase;
 
-#define VASE_RADIUS_MIN 20
+#define VASE_RADIUS_MIN 10
 #define VASE_RADIUS_MAX 80
 
 #define VASE_HEIGHT_MIN 1
@@ -114,16 +125,28 @@ void initGui();
 void renderGui();
 bool isEditing();
 
+void BtnNew();
+void BtnExport();
+
 bool smoothModel = false;
+bool autoRegenerate = true;
+
+bool isWindowVisible[2] = {false, false};
+
+Font font;
 
 void initVase()
 {
     v.toUpdate = true;
     v.height = 100;
-    v.radius = 50;
+    v.radius = 20;
     v.resolution = 300;
     v.layerHeight = 200;
     v.color = 0;
+
+    v.profileDepth = 10;
+    for(size_t i = 0; i< 10; i++)
+        v.profile[i] = GetRandomValue(0,1000);
 
     for(size_t i = 0; i<MAX_NOISES; ++i)
     {
@@ -139,16 +162,70 @@ void initVase()
     }
 }
 
+// Calculate spline coeff. from ten points equally-separated
+void naturalSpline(int32_t yy[10], float results[40])
+{
+    float mu[9];
+    float z[10];
+    float g = 0;
+    float y[10];
+
+    for(size_t i = 0; i < 10; ++i)
+        y[i] = yy[i]/1000.0f;
+
+    mu[0] = 0;
+    z[0] = 0;
+
+    for (int i = 1; i < 9; i++) {
+        g = 4 - mu[i -1];
+        mu[i] = 1 / g;
+        z[i] = (3 * (y[i + 1]  - y[i] * 2 + y[i - 1]) - z[i - 1]) / g;
+    }
+
+    float b[9];
+    float c[10];
+    float d[9];
+
+    z[9] = 0;
+    c[9] = 0;
+
+    for (int j = 8; j >=0; j--) {
+        c[j] = z[j] - mu[j] * c[j + 1];
+        b[j] = (y[j + 1] - y[j]) - 1 * (c[j + 1] + 2 * c[j]) / 3;
+        d[j] = (c[j + 1] - c[j]) / 3;
+    }
+
+    for (int i = 0; i < 9; i++) {
+        results[4*i+0] = y[i];
+        results[4*i+1] = b[i];
+        results[4*i+2] = c[i];
+        results[4*i+3] = d[i];
+    }
+}
+
+// Using coeff. calculated above we can approximate y value for x.
+// Used to interpolate points set by user
+float interpolateSpline(float coeff [40], float x)
+{
+    x*=9;
+    int xx = (int)x;
+    float val = x-xx;
+    float* cur = &coeff[xx*4];
+    return cur[0] + cur[1]*val + cur[2]*val*val + cur[3]*val*val*val;
+}
+
 void regenerate()
 {
+    float start = GetTime();
     v.noise[0].enabled = true;
     v.noise[0].height = 10;
     v.toUpdate = false;
 
+    float profileCoeff[40];
+    naturalSpline(v.profile, profileCoeff);
     //open_simplex_noise(v.noise[0].seed, &v.noise[0].ctx);
 
     float layerHeightMm = v.layerHeight / 1000.0f;
-
     size_t layersCnt = (size_t)(v.height/layerHeightMm)+1;
 
     printf("Layers: %d/%f = %lu\n", v.height, layerHeightMm, layersCnt);
@@ -226,6 +303,10 @@ void regenerate()
 
 printf("TIME #-5: %f\n", GetTime());
 
+    for(size_t i = 0; i< 10; i++)
+    {
+        printf("V: %f\n", interpolateSpline(profileCoeff, i*1.0/10));
+    }
     for(size_t x = 0; x < v.resolution; ++x)
     {
         for(size_t y = 0; y < layersCnt; y++)
@@ -233,6 +314,8 @@ printf("TIME #-5: %f\n", GetTime());
             const size_t idx = x*layersCnt+y;
 
             float radius = v.radius;
+
+            radius += v.profileDepth * interpolateSpline(profileCoeff, y*1.0/layersCnt);
 
             size_t xx = x%(v.resolution-1);
             size_t yy = y;
@@ -471,7 +554,14 @@ printf("TIME #-1: %f\n", GetTime());
     RL_FREE(tempBuffer);
     printf("TIME #4: %f\n", GetTime());
 
+    lastDur = GetTime() - start;
+
 }
+
+Texture icons[4][2];
+Texture refreshIcon;
+
+const char* iconsDescr[4] = { "NEW VASE", "DOWNLOAD THIS VASE", "VASE SETTINGS", "NOISE SETTINGS"};
 
 int main()
 {
@@ -481,6 +571,23 @@ int main()
 
     initVase();
     initGui();
+
+    font =  LoadFontEx("resources/Zector.ttf", 20, NULL, 0);  // Load font from file with extended parameters, use NULL for fontChars and 0 for glyphCount to load the default character set
+
+
+    icons[0][1] = LoadTexture("resources/icons/new.empty.png");
+    icons[0][0] = LoadTexture("resources/icons/new.png");
+
+    icons[1][0] = LoadTexture("resources/icons/download.png");
+    icons[1][1] = LoadTexture("resources/icons/download.empty.png");
+
+    icons[2][0] = LoadTexture("resources/icons/vase.png");
+    icons[2][1] = LoadTexture("resources/icons/vase.empty.png");
+
+    icons[3][0] = LoadTexture("resources/icons/layers.png");
+    icons[3][1] = LoadTexture("resources/icons/layers.empty.png");
+
+    refreshIcon = LoadTexture("resources/icons/refresh.png");
 
     // Init resources
     // Camera is fixed
@@ -530,33 +637,68 @@ void UpdateDrawFrame()
         screen_w = new_screen_w;
         screen_h = new_screen_h;
         SetWindowSize(screen_w, screen_h);
+        initGui();
     }
 
     static float modelRotationX = 45;
     static float cameraHeight = 150;
     static bool isOverGUI = false;
 
-    static bool         showVaseSettings = false;
-    static Rectangle    vaseSettingsRect;
+    static bool wasButtonDown = false;
 
-    if (v.toUpdate && IsMouseButtonUp(0))
-    {
+    static int draggedWindow = -1;
+    int hittedWindow = -1;
+
+    if (v.toUpdate && autoRegenerate && IsMouseButtonUp(0))
         regenerate();
-    }
 
 
     Vector2 mouse = GetMousePosition();
 
-    isOverGUI = false;
-    for(int r = 0; r < 9; r++)
-    {
+    hittedWindow = -1;
 
-        if (CheckCollisionPointRec(mouse, layoutRects[r]))
+    if (IsMouseButtonUp(0))
+        draggedWindow = -1;
+
+    if (IsMouseButtonDown(0) && draggedWindow >= 0)
+    {
+        if (draggedWindow == LAY_WINDOW_SETTINGS)
         {
-            isOverGUI = true;
+            ancSettings.x += GetMouseDelta().x;
+            ancSettings.y += GetMouseDelta().y;
+
+            if (ancSettings.x < 50) ancSettings.x = 50;
+            initGui();
+        }
+    }
+
+    for(int r = 0; r < 2; r++)
+    {
+        if (isWindowVisible[r] && CheckCollisionPointRec(mouse, layoutRects[r]))
+        {
+            hittedWindow = r;
+
+            Rectangle header = layoutRects[r];
+            header.height = 24;
+
+            if (IsMouseButtonDown(0) && !wasButtonDown && CheckCollisionPointRec(mouse, header))
+            {
+                draggedWindow = r;
+            }
             break;
         }
     }
+
+
+
+    isOverGUI = hittedWindow >= 0 || draggedWindow >= 0;
+
+    if (!autoRegenerate && v.toUpdate &&
+        !isOverGUI && !wasButtonDown && IsMouseButtonDown(0)
+        && mouse.x > screen_w - 32- 20 && mouse.x < screen_w - 20
+        && mouse.y > 20 && mouse.y < 20 + 32
+        )
+        regenerate();
 
     {
         // Move model
@@ -587,7 +729,7 @@ void UpdateDrawFrame()
                 float delta = 20*GetFrameTime();
                 if (speedX < 0) delta *= -1;
 
-                if (delta > speedX) speedX = 0;
+                if (fabs(delta) > fabs(speedX)) speedX = 0;
                 else speedX -= delta;
 
                 if (fabs(speedX) < 0.1)
@@ -632,7 +774,54 @@ void UpdateDrawFrame()
             EndMode3D();
         }
 
+        if (v.toUpdate && !autoRegenerate)
+            DrawTexture(refreshIcon, screen_w - 32 - 20, 20, (Color){200,200,200,100});
+
         // Draw UI
+
+
+
+        Color c = {100,100,100,200};
+        Color c1 = {180,180,180,200};
+
+        DrawRectangle(0,0,48,screen_h, (Color){15,36,51,230});
+
+        for(int i = 0; i < 4; ++i)
+        {
+            if (CheckCollisionPointRec(mouse, (Rectangle){8,8*(i+1)+40*i,32,32}))
+            {
+                DrawTexture(icons[i][0],8,8*(i+1)+40*i,c1);
+                DrawTextPro(font, iconsDescr[i], (Vector2) {33, 210}, (Vector2) {0, 0}, 90, 20, 3, (Color){180,180,180,200});
+
+                if(IsMouseButtonPressed(0))
+                {
+                    switch(i)
+                    {
+                        case 0:
+                            BtnNew();
+                            break;
+
+                        case 1:
+                            BtnExport();
+                            break;
+
+                        case 2:
+                            isWindowVisible[LAY_WINDOW_SETTINGS] = true;
+                            ancSettings.x = 50;
+                            ancSettings.y = 8*(i+1)+40*i;
+                            initGui();
+                            break;
+
+                        case 3:
+                            break;
+                    }
+                }
+
+
+            }
+            else
+                DrawTexture(icons[i][1],8,8*(i+1)+40*i,c);
+        }
 
         renderGui();
 
@@ -641,96 +830,15 @@ void UpdateDrawFrame()
         if (lastEditingState != isEditing())
         {
             lastEditingState = isEditing();
-            if (lastEditingState == false) regenerate();
+            if (lastEditingState == false) v.toUpdate = true;
         }
 
-        /*
-        // --- ACTIONS
-        const int GUI_SPACING = 15;
-        GuiWindowBox((Rectangle){GUI_SPACING, GUI_SPACING, 180, GUI_SPACING + 20 + GUI_SPACING*3 + 30*3}, "#198# ACTIONS");
-
-        isPreviewEnabled = GuiToggle((Rectangle){GUI_SPACING*2, GUI_SPACING + 20 + GUI_SPACING, 180-15*2, 30}, "#12# LIVE PREVIEW", isPreviewEnabled);
-
-        // Export Model
-        if (GuiButton((Rectangle){GUI_SPACING*2, GUI_SPACING + 20 + GUI_SPACING*2 + 30, 180-15*2, 30}, "#2# EXPORT MODEL"))
-        {
-
-        }
-
-        // About Vasaro
-        if (GuiButton((Rectangle){GUI_SPACING*2, GUI_SPACING + 20 + GUI_SPACING*3 + 30*2, 180-15*2, 30}, "#193# ABOUT VASARO"))
-        {
-
-        }
-
-        // --- VASE SETTINGS
-        const int SETTINGS_TOP = GUI_SPACING + 20 + GUI_SPACING*5 + 30*3;
-        GuiWindowBox((Rectangle){GUI_SPACING, SETTINGS_TOP, 180, GUI_SPACING + 20 + GUI_SPACING*2 + 30*2}, "#140# VASE PARAMS");
-
-        // Dimensions
-        if (GuiButton((Rectangle){GUI_SPACING*2, SETTINGS_TOP + 20 + GUI_SPACING, 180-15*2, 30}, "#69# SETTINGS ..."))
-        {
-            showVaseSettings = true;
-            vaseSettingsRect = (Rectangle){screen_w/2 - 150, screen_h/2 - 100, 300, 200};
-        }
-
-        if (showVaseSettings)
-        {
-            if (GuiWindowBox(vaseSettingsRect, "Vase settings"))
-            {
-                showVaseSettings = false;
-            }
-
-            float newDiameter = GuiSlider((Rectangle){vaseSettingsRect.x+GUI_SPACING+100, vaseSettingsRect.y+GUI_SPACING+20, 100,30}, "DIAMETER: ", "", v.diameter, 20,120);
-
-            if (newDiameter != v.diameter)
-            {
-                v.toUpdate = true;
-                v.diameter = newDiameter;
-            }
-        }
-
-        // Dimensions
-        if (GuiButton((Rectangle){GUI_SPACING*2, SETTINGS_TOP + 20 + GUI_SPACING*2 + 30, 180-15*2, 30}, "#22# EDIT PROFILE ..."))
-        {
-
-        }
-
-        // --- NOISE LAYERS
-        const int NOISE_TOP = SETTINGS_TOP + 20 + GUI_SPACING*4 + 30*2;
-        GuiWindowBox((Rectangle){GUI_SPACING, NOISE_TOP, 180, screen_h - NOISE_TOP - GUI_SPACING}, "#95# NOISE LAYERS");
-
-        // ADD
-        if (GuiButton((Rectangle){GUI_SPACING*2, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#8#"))
-        {
-
-        }
-
-        if (GuiButton((Rectangle){GUI_SPACING*2 + 30 + 10, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#9#"))
-        {
-        }
-
-        if (GuiButton((Rectangle){GUI_SPACING*2 + 30*2 + 10*2, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#44#"))
-        {
-        }
-
-        if (GuiButton((Rectangle){GUI_SPACING*2 + 30*3 + 10*3, NOISE_TOP + 20 + GUI_SPACING, 30, 30}, "#45#"))
-        {
-        }
-
-        const char* lv = "LAYER #1;LAYER #2";
-        int a;
-        selectedLayer = GuiListView((Rectangle){GUI_SPACING*2, NOISE_TOP + 20 + GUI_SPACING*2 + 30, 180-30, screen_h - GUI_SPACING - NOISE_TOP - 20 - GUI_SPACING - 30*2}, lv, &a, selectedLayer);
-
-
-        if (IsMouseButtonPressed(0))
-            validModelClick = GetMousePosition().x > 180;
-        // VISIBLE
-
-        // INVISIBLE
-        //DrawText(s, 190, 200, 20, (Color){200,200,100,100});
-*/
+        char stats[200];
+        snprintf(stats, 200, "%lu TRIANGLES GENERATED IN %0.3fs", model.meshes[0].triangleCount, lastDur);
+        DrawText(stats, 60, screen_h - 20, 10, (Color){230,230,230,200});
     EndDrawing();
+
+    wasButtonDown = IsMouseButtonDown(0);
 
     //----------------------------------------------------------------------------------
 }
@@ -851,6 +959,9 @@ void recalcNormals(Mesh mesh, int enabled)
 
 void BtnExport()
 {
+    if (v.toUpdate)
+        regenerate();
+
     uint32_t        triCount    = model.meshes[0].vertexCount / 3;
     unsigned int    FILE_SIZE   = 80 + sizeof(uint32_t) + (sizeof(float)*3 + sizeof(float)*9 + sizeof(uint16_t)) * triCount;
 
@@ -898,20 +1009,32 @@ void BtnExport()
 
 void initGui(void)
 {
-    Vector2 anchor01 = (Vector2){ 0, 0 };
-    Vector2 anchor02 = (Vector2){ 0, 168 };
+    layoutRects[LAY_WINDOW_SETTINGS] = (Rectangle){ ancSettings.x + 8, ancSettings.y + 0, 360, 435 };
+    layoutRects[LAY_TEXT_RADIUS] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 40, 64, 24 };
+    layoutRects[LAY_TEXT_HEIGHT] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 72, 64, 24 };
+    layoutRects[LAY_TEXT_LAYERH] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 104, 64, 24 };
+    layoutRects[LAY_TEXT_POINTS] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 136, 64, 24 };
+    layoutRects[LAY_COMBO_COLORS] = (Rectangle){ ancSettings.x + 16,  ancSettings.y + 212, 120, 24 };
 
-    layoutRects[LAY_BUTTON_EXPORT] = (Rectangle){ anchor01.x + 16, anchor01.y+ 88, 120, 24 };
-    layoutRects[LAY_BUTTON_NEW] = (Rectangle){ anchor01.x + 16, anchor01.y + 48, 120, 24 };
-    layoutRects[LAY_CHECKBOX_FAST] = (Rectangle){ anchor01.x + 16, anchor01.y + 128, 16, 16 };
 
-    layoutRects[LAY_WINDOW_MODEL] = (Rectangle){ anchor01.x + 8, anchor01.y + 8, 136, 144+8 };
-    layoutRects[LAY_WINDOW_SETTINGS] = (Rectangle){ anchor02.x + 8, anchor02.y + 0, 135, 216 };
-    layoutRects[LAY_TEXT_RADIUS] = (Rectangle){ anchor02.x + 76, anchor02.y + 40, 60, 24 };
-    layoutRects[LAY_TEXT_HEIGHT] = (Rectangle){ anchor02.x + 76, anchor02.y + 72, 60, 24 };
-    layoutRects[LAY_TEXT_POINTS] = (Rectangle){ anchor02.x + 76, anchor02.y + 104, 60, 24 };
-    layoutRects[LAY_TEXT_LAYERH] = (Rectangle){ anchor02.x + 76, anchor02.y + 136, 60, 24 };
-    layoutRects[LAY_COMBO_COLORS] = (Rectangle){ anchor02.x + 16,  anchor02.y + 180, 120, 24 };
+    layoutRects[LAY_PROFILE_GROUP] = (Rectangle) { ancSettings.x + 194, ancSettings.y + 8 + 24 + 8, 160, 380};
+
+    Vector2 ancProfile = { layoutRects[LAY_PROFILE_GROUP].x + 20, layoutRects[LAY_PROFILE_GROUP].y + 10 };
+
+    layoutRects[LAY_BUTTON_PROFILE_THICKNESS] = (Rectangle) { ancProfile.x + 40, ancProfile.y + 10, 80, 24};
+
+    for(size_t i = 0; i < 10; ++i)
+        layoutRects[LAY_SCROLL_PROFILE_9 - i] = (Rectangle){ ancProfile.x, ancProfile.y + 32*i+40, 120, 24 };
+
+
+    layoutRects[LAY_RENDERING_GROUP] = (Rectangle) { ancSettings.x + 20, ancSettings.y + 280, 160, 140};
+    Vector2 ancRendering = { layoutRects[LAY_RENDERING_GROUP].x + 10, layoutRects[LAY_RENDERING_GROUP].y + 10 };
+    layoutRects[LAY_COMBO_COLORS] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10, 120, 24 };
+    layoutRects[LAY_SMOOTH] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10 + 40, 120, 24 };
+    layoutRects[LAY_AUTOREGEN] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10 + 40*2, 120, 24 };
+
+
+
 
 
 }
@@ -919,45 +1042,79 @@ void initGui(void)
 void BtnNew()
 {
     initVase();
+    isWindowVisible[0] = false;
+    isWindowVisible[1] = false;
 }
 
 bool vaseHeightEditMode = false;
 bool vaseLayerHeightEditMode = false;
 bool vasePointsEditMode = false;
 bool vaseRadiusEditMode = false;
-
+bool showProfileWindow = false;
+bool vaseProfileDepthEditMode = false;
 
 bool isEditing()
 {
-   return vaseHeightEditMode || vaseLayerHeightEditMode || vasePointsEditMode || vaseRadiusEditMode;
+   return vaseProfileDepthEditMode || vaseHeightEditMode || vaseLayerHeightEditMode || vasePointsEditMode || vaseRadiusEditMode;
 }
 
 void renderGui()
 {
+    //bool isProfileWindowOpen = showProfileWindow;
 
-    GuiWindowBox(layoutRects[LAY_WINDOW_MODEL], "MODEL");
-    if (GuiButton(layoutRects[LAY_BUTTON_EXPORT], "EXPORT AS STL")) BtnExport();
-    if (GuiButton(layoutRects[LAY_BUTTON_NEW], "NEW VASE")) BtnNew();
-    if (smoothModel != GuiCheckBox(layoutRects[LAY_CHECKBOX_FAST], " SMOOTH MODEL", smoothModel))
+    static bool profileChanged = false;
+
+    //if (isProfileWindowOpen) GuiDisable();
+
+    if (isWindowVisible[LAY_WINDOW_SETTINGS])
     {
-        smoothModel = !smoothModel;
-        v.toUpdate = true;
+        isWindowVisible[LAY_WINDOW_SETTINGS] = !GuiWindowBox(layoutRects[LAY_WINDOW_SETTINGS], "VASE SETTINGS");
+        if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS (MM) ", &v.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
+        if (GuiValueBox(layoutRects[LAY_TEXT_HEIGHT], "HEIGHT (MM) ", &v.height, VASE_HEIGHT_MIN, VASE_HEIGHT_MAX, vaseHeightEditMode)) vaseHeightEditMode = !vaseHeightEditMode;
+        if (GuiValueBox(layoutRects[LAY_TEXT_POINTS], "BASE VERTICES ", &v.resolution, VASE_RESOLUTION_MIN, VASE_RESOLUTION_MAX, vasePointsEditMode)) vasePointsEditMode = !vasePointsEditMode;
+
+        int maxLayers = 1000*v.height;
+        if (maxLayers < VASE_LAYER_HEIGHT_MIN) maxLayers = v.layerHeight;
+        if (GuiValueBox(layoutRects[LAY_TEXT_LAYERH], "LAYER (MICRON) ", &v.layerHeight, VASE_LAYER_HEIGHT_MIN, maxLayers, vaseLayerHeightEditMode)) vaseLayerHeightEditMode = !vaseLayerHeightEditMode;
+
+
+
+
+        GuiGroupBox(layoutRects[LAY_PROFILE_GROUP], "PROFILE");
+
+        if (GuiValueBox(layoutRects[LAY_BUTTON_PROFILE_THICKNESS], "DEPTH ", &v.profileDepth, 1, v.radius, vaseProfileDepthEditMode)) vaseProfileDepthEditMode = !vaseProfileDepthEditMode;
+
+        bool isStillOver = false;
+        for(size_t i = 0; i < 10; i++)
+        {
+            int32_t old = v.profile[i];
+            v.profile[i] = GuiSlider(layoutRects[LAY_SCROLL_PROFILE_0 + i], "", "", v.profile[i], 0, 1000);
+            if (old != v.profile[i]) profileChanged = true;
+
+            if(!isStillOver && CheckCollisionPointRec(GetMousePosition(), layoutRects[LAY_SCROLL_PROFILE_0 +i]) && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+            {
+                isStillOver = true;
+
+            }
+
+        }
+
+        GuiGroupBox(layoutRects[LAY_RENDERING_GROUP], "RENDERING");
+        v.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", v.color);
+
+        bool wasSmooth = smoothModel;
+        smoothModel = GuiToggle(layoutRects[LAY_SMOOTH], "SMOOTH MODEL", smoothModel);
+        if (wasSmooth != smoothModel) v.toUpdate = true;
+
+        autoRegenerate = GuiToggle(layoutRects[LAY_AUTOREGEN], "AUTO REGENERATE", autoRegenerate);
+
+
+        if (!isStillOver && profileChanged)
+        {
+            v.toUpdate = true;
+            profileChanged = false;
+        }
     }
-
-
-    GuiWindowBox(layoutRects[LAY_WINDOW_SETTINGS], "SETTINGS");
-    if (GuiValueBox(layoutRects[LAY_TEXT_HEIGHT], "HEIGHT: ", &v.height, VASE_HEIGHT_MIN, VASE_HEIGHT_MAX, vaseHeightEditMode)) vaseHeightEditMode = !vaseHeightEditMode;
-    if (GuiValueBox(layoutRects[LAY_TEXT_POINTS], "POINTS: ", &v.resolution, VASE_RESOLUTION_MIN, VASE_RESOLUTION_MAX, vasePointsEditMode)) vasePointsEditMode = !vasePointsEditMode;
-
-    int maxLayers = 1000*v.height;
-    if (maxLayers < VASE_LAYER_HEIGHT_MIN) maxLayers = v.layerHeight;
-
-    if (GuiValueBox(layoutRects[LAY_TEXT_LAYERH], "LAYER H.: ", &v.layerHeight, VASE_LAYER_HEIGHT_MIN, maxLayers, vaseLayerHeightEditMode)) vaseLayerHeightEditMode = !vaseLayerHeightEditMode;
-
-
-    v.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", v.color);
-    if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS: ", &v.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
-
 
     if (!isEditing())
     {
@@ -973,4 +1130,27 @@ void renderGui()
         if (v.resolution < VASE_RESOLUTION_MIN) v.resolution = VASE_RESOLUTION_MIN;
         if (v.resolution > VASE_RESOLUTION_MAX) v.resolution = VASE_RESOLUTION_MAX;
     }
+
+/*
+    if (isProfileWindowOpen)
+    {
+        GuiEnable();
+        if (GuiWindowBox(layoutRects[LAY_WINDOW_PROFILE], "PROFILE")) showProfileWindow = false;
+
+
+
+        GuiDisable();
+    }
+
+    v.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", v.color);
+    if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS: ", &v.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
+
+
+
+
+    if (isProfileWindowOpen)
+        GuiEnable();
+
+        */
+
 }
