@@ -635,7 +635,8 @@ void renderNoiseWindow()
             else break;
         }
 
-        items[strlen(items)-1] = 0;
+        pos += snprintf(&items[pos], 80, "<NOTHING>");
+
     }
 
     if (hasNoise) GuiEnable();
@@ -656,7 +657,7 @@ void renderNoiseWindow()
         vase.toUpdate = true;
     }
 
-    if (noiseCount > 0) GuiEnable();
+    if (noiseCount > 0 && selectedNoise < noiseCount) GuiEnable();
     else GuiDisable();
     if (GuiButton(layoutRects[LAY_BUTTON_REMOVE_NOISE], "REMOVE")) {
 
@@ -665,12 +666,13 @@ void renderNoiseWindow()
 
         vase.noise[MAX_NOISES - 1].enabled = false;
 
-        selectedNoise = -1;
+        selectedNoise = noiseCount-1;
         vase.toUpdate = true;
+
+
     }
 
     GuiEnable();
-
 }
 
 void renderSettingsWindow()
