@@ -11,35 +11,27 @@
 #define RLIGHTS_IMPLEMENTATION
 #include "rlights.h"
 
-#include "hashmap.h"
-#include "noises/opensimplexnoise.h"
-#include "noises/simplexnoise.h"
+#include "generator.h"
 
-int screen_w = 640;
-int screen_h = 480;
 
-int new_screen_w = 640;
-int new_screen_h = 480;
+int screen_w = 640, screen_h = 480;                 // Current resolution
+int required_screen_w = 0, required_screen_h = 0;   // Required resolution (resize event!)
 
-int isPreviewEnabled = 1;
-int selectedLayer = 0;
+uint16_t globalNoiseId = 1;
+float genTiming = 0;
 
-float lastDur = 0;
-
-Vector2 ancModel = (Vector2){ 50, 0 };
 Vector2 ancSettings = (Vector2){50, 168 };
-Vector2 ancProfile = (Vector2){ 50, 0};
+Vector2 ancNoise    = (Vector2){40, 168 + 40};
 
+// WASM
 void emscripten_run_script(const char *script);
 void emscripten_set_main_loop(void (*func)(), int fps, int simulate_infinite_loop);
 
-Camera  camera;
-Shader  shader;
-Light   light;
-Model   model;
-
 enum {
     LAY_WINDOW_SETTINGS = 0,
+    LAY_WINDOW_NOISE,
+
+    // SETTINGS
     LAY_TEXT_RADIUS,
     LAY_TEXT_HEIGHT,
     LAY_TEXT_POINTS,
@@ -53,9 +45,42 @@ enum {
     LAY_COMBO_COLORS,
     LAY_SMOOTH,
     LAY_AUTOREGEN,
+
+    // NOISE
+    LAY_DROPDOWN_NOISE,
+    LAY_BUTTON_ADD_NOISE,
+    LAY_BUTTON_REMOVE_NOISE,
+    LAY_CHECKBOX_NOISE_VISIBILE,
+    LAY_TEXT_XSCALE,
+    LAY_TEXT_YSCALE,
+    LAY_TEXT_TWIST,
+    LAY_NOISE_STRENGTH_GROUP,
+    LAY_NOISE_STRENGTH,
+    LAY_SCROLL_STRENGTH_0, LAY_SCROLL_STRENGTH_1, LAY_SCROLL_STRENGTH_2, LAY_SCROLL_STRENGTH_3, LAY_SCROLL_STRENGTH_4,
+    LAY_SCROLL_STRENGTH_5, LAY_SCROLL_STRENGTH_6, LAY_SCROLL_STRENGTH_7, LAY_SCROLL_STRENGTH_8, LAY_SCROLL_STRENGTH_9,
     LAY_COUNT
-}
-LayoutRects;
+} LayoutRects;
+
+Camera  camera;
+Shader  shader;
+Light   light;
+Model   model;
+Vase    vase;
+
+// Used to manage popups
+int32_t     hittedWindow = INT32_MIN;
+int32_t     activeWindow = INT32_MIN;
+int32_t     draggedWindow = INT32_MIN;
+int32_t     zOrder[2] = {LAY_WINDOW_SETTINGS, LAY_WINDOW_NOISE};
+
+bool isWindowVisible[2] = {false, false};
+
+// Main menu
+Texture icons[4][2];
+const char* iconsDescr[4] = { "NEW VASE", "DOWNLOAD THIS VASE", "VASE SETTINGS", "NOISE SETTINGS"};
+
+// Refresh button
+Texture refreshIcon;
 
 Rectangle layoutRects[LAY_COUNT];
 
@@ -71,42 +96,7 @@ Color colors[] =
     (Color){30,30,30}
 };
 
-void resize(int w, int h)
-{
-    new_screen_w = w;
-    new_screen_h = h;
-}
-
-void recalcNormals(Mesh mesh, int enabled);
-void UpdateDrawFrame();
-
-#define MAX_NOISES 10
-
-typedef struct {
-    bool        enabled;
-    int64_t     seed;
-    Vector3     direction;
-    float       height;
-    float       alpha[10];
-
-    struct osn_context *ctx;
-} Noise;
-
-typedef struct {
-    int32_t    height;         // 100
-    int32_t    radius;       // 60
-    int32_t    resolution;     // 3032
-    int32_t    layerHeight;    // 0.2
-
-    int32_t     profile[10];
-    int32_t     profileDepth;
-
-    bool        toUpdate;
-    Noise       noise[MAX_NOISES];
-
-    size_t      color;
-} Vase;
-
+// Some default values
 #define VASE_RADIUS_MIN 10
 #define VASE_RADIUS_MAX 80
 
@@ -119,449 +109,58 @@ typedef struct {
 #define VASE_LAYER_HEIGHT_MIN 50
 #define VASE_LAYER_HEIGHT_MAX 200*1000
 
-Vase v;
+#define VASE_MAX_PROFILE_DEPTH 50
 
+// Forward decls
+void updateFrame();
 void initGui();
 void renderGui();
 bool isEditing();
 
-void BtnNew();
-void BtnExport();
+void onButtonNew();
+void onButtonExport();
 
 bool smoothModel = false;
 bool autoRegenerate = true;
 
-bool isWindowVisible[2] = {false, false};
-
+// Default gui font
 Font font;
 
+// Called from JS on resize
+void resize(int w, int h)
+{
+    required_screen_w = w;
+    required_screen_h = h;
+}
+
+// Re-init vase
 void initVase()
 {
-    v.toUpdate = true;
-    v.height = 100;
-    v.radius = 20;
-    v.resolution = 300;
-    v.layerHeight = 200;
-    v.color = 0;
+    globalNoiseId = 1;
+    vase.toUpdate = true;
+    vase.height = 100;
+    vase.radius = 20;
+    vase.resolution = 300;
+    vase.layerHeight = 200;
+    vase.color = 0;
 
-    v.profileDepth = 10;
+    vase.profileDepth = 10;
     for(size_t i = 0; i< 10; i++)
-        v.profile[i] = GetRandomValue(0,1000);
+        vase.profile[i] = GetRandomValue(0,1000);
 
     for(size_t i = 0; i<MAX_NOISES; ++i)
     {
-        v.noise[i].enabled = false;
+        vase.noise[i].enabled = false;
+        vase.noise[i].visible = true;
 
         for(size_t k = 0; k < 10; ++k)
-            v.noise[i].alpha[k] = 1.0;
+            vase.noise[i].alpha[k] = 1.0;
 
-        v.noise[i].direction = (Vector3){1,0,1};
-        v.noise[i].height = 20;
-        v.noise[i].seed = GetRandomValue(-1000000000, 1000000000);
-        v.noise[i].ctx = NULL;
+        vase.noise[i].direction = (Vector3){1,0,1};
+        vase.noise[i].height = 20;
+        vase.noise[i].seed = GetRandomValue(-1000000000, 1000000000);
     }
 }
-
-// Calculate spline coeff. from ten points equally-separated
-void naturalSpline(int32_t yy[10], float results[40])
-{
-    float mu[9];
-    float z[10];
-    float g = 0;
-    float y[10];
-
-    for(size_t i = 0; i < 10; ++i)
-        y[i] = yy[i]/1000.0f;
-
-    mu[0] = 0;
-    z[0] = 0;
-
-    for (int i = 1; i < 9; i++) {
-        g = 4 - mu[i -1];
-        mu[i] = 1 / g;
-        z[i] = (3 * (y[i + 1]  - y[i] * 2 + y[i - 1]) - z[i - 1]) / g;
-    }
-
-    float b[9];
-    float c[10];
-    float d[9];
-
-    z[9] = 0;
-    c[9] = 0;
-
-    for (int j = 8; j >=0; j--) {
-        c[j] = z[j] - mu[j] * c[j + 1];
-        b[j] = (y[j + 1] - y[j]) - 1 * (c[j + 1] + 2 * c[j]) / 3;
-        d[j] = (c[j + 1] - c[j]) / 3;
-    }
-
-    for (int i = 0; i < 9; i++) {
-        results[4*i+0] = y[i];
-        results[4*i+1] = b[i];
-        results[4*i+2] = c[i];
-        results[4*i+3] = d[i];
-    }
-}
-
-// Using coeff. calculated above we can approximate y value for x.
-// Used to interpolate points set by user
-float interpolateSpline(float coeff [40], float x)
-{
-    x*=9;
-    int xx = (int)x;
-    float val = x-xx;
-    float* cur = &coeff[xx*4];
-    return cur[0] + cur[1]*val + cur[2]*val*val + cur[3]*val*val*val;
-}
-
-void regenerate()
-{
-    float start = GetTime();
-    v.noise[0].enabled = true;
-    v.noise[0].height = 10;
-    v.toUpdate = false;
-
-    float profileCoeff[40];
-    naturalSpline(v.profile, profileCoeff);
-    //open_simplex_noise(v.noise[0].seed, &v.noise[0].ctx);
-
-    float layerHeightMm = v.layerHeight / 1000.0f;
-    size_t layersCnt = (size_t)(v.height/layerHeightMm)+1;
-
-    printf("Layers: %d/%f = %lu\n", v.height, layerHeightMm, layersCnt);
-    printf("Seed: %f\n", 289.0*(v.noise[0].seed)/1000000000);
-
-    Vector3 *sideMeshVertex;
-
-    #if CALC_NORMALS_WHEN_GENERATE
-    Vector3 *sideMeshVertexNormals;
-    Vector2  *sideMeshVertexNormalsMap;
-    #endif
-
-    printf("Vertex: %u resolution * %lu layers = %lu\n", v.resolution, layersCnt, layersCnt*v.resolution);
-
-    /*
-        VASE TOP
-        --------layersCnt     sideMeshVertex[layersCnt-1]
-        --------y2            sideMeshVertex[2]
-        --------y1            sideMeshVertex[1]
-        --------y0            sideMeshVertex[0]
-        xn    x0
-    */
-
-    // Ok, we can guess how many triangle we need
-    const size_t side_vertex_floats_count =
-      (layersCnt-2)         // Number of layers
-      * (v.resolution-1)    // Number of points per layer
-      * 2                   // 2 triangle for each point
-      * 3                   // 3 coords for each point
-      * 3                   // 3 points for each triangle
-
-
-      + 2                   // Last two layers
-      * (v.resolution-1)    // Number of points per layer
-      * 1                   // 1 triangle for each point
-      * 3                   // 3 coords for each point
-      * 3                   // 3 points for each triangle
-      ;
-
-    const size_t base_vertex_floats_count =
-      (v.resolution-1)      // Triangles
-      * 3                   // 3 coords for each point
-      * 3;                  // 3 points for each triangle
-
-    const size_t total_vertex_floats_count =
-      side_vertex_floats_count          // Side
-      + 2 * base_vertex_floats_count;   // Top and bottom layer
-
-    printf("side_vertex_floats_count = %lu\n", side_vertex_floats_count);
-    printf("base_vertex_floats_count = %lu\n", base_vertex_floats_count);
-    printf("total_vertex_floats_count = %lu\n", total_vertex_floats_count);
-
-    Mesh m = {0};
-    m.vertexCount = total_vertex_floats_count/3;
-    m.triangleCount = total_vertex_floats_count/3/3;
-
-    // Allocate all the space we need for the mesh
-    float *meshBuffer = RL_MALLOC(sizeof(float)*total_vertex_floats_count*2);
-    m.vertices  = &meshBuffer[0];
-    m.normals   = &meshBuffer[total_vertex_floats_count];
-
-    // Allocate all the space we need for our calcs
-    #if CALC_NORMALS_WHEN_GENERATE
-    Vector3 *tempBuffer = RL_MALLOC(sizeof(Vector3) * v.resolution * layersCnt * 2 + sizeof(Vector2)*side_vertex_floats_count/3);
-    #else
-    Vector3 *tempBuffer = RL_MALLOC(sizeof(Vector3) * v.resolution * layersCnt);
-    #endif
-
-    sideMeshVertex              = &tempBuffer[0];
-
-    #if CALC_NORMALS_WHEN_GENERATE
-    sideMeshVertexNormals       = &tempBuffer[v.resolution * layersCnt];
-    sideMeshVertexNormalsMap    = (Vector2*)(&tempBuffer[v.resolution * layersCnt * 2]);
-    #endif
-
-printf("TIME #-5: %f\n", GetTime());
-
-    for(size_t i = 0; i< 10; i++)
-    {
-        printf("V: %f\n", interpolateSpline(profileCoeff, i*1.0/10));
-    }
-    for(size_t x = 0; x < v.resolution; ++x)
-    {
-        for(size_t y = 0; y < layersCnt; y++)
-        {
-            const size_t idx = x*layersCnt+y;
-
-            float radius = v.radius;
-
-            radius += v.profileDepth * interpolateSpline(profileCoeff, y*1.0/layersCnt);
-
-            size_t xx = x%(v.resolution-1);
-            size_t yy = y;
-
-            // Add open simplex noise --->
-            for(size_t j = 0; j < MAX_NOISES; j++)
-            {
-                if (!v.noise[j].enabled) continue;
-
-                float delta = 1+snoise4
-                (
-                    0.02*v.radius*cos(2*PI*xx/(v.resolution-1)),
-                    0.02*v.radius*sin(2*PI*xx/(v.resolution-1)),
-                    0.02*yy*layerHeightMm,
-                    289.0*(v.noise[j].seed)/1000000000
-                );
-
-
-                radius += delta * v.noise[j].height;
-            }
-
-            sideMeshVertex[idx] = (Vector3)
-            {
-                radius*cos(2*PI*xx/(v.resolution-1)),
-                yy*layerHeightMm,
-                radius*sin(2*PI*xx/(v.resolution-1))
-            };
-
-            #if CALC_NORMALS_WHEN_GENERATE
-            sideMeshVertexNormals[idx] = (Vector3){0,0,0};
-            #endif
-        }
-    }
-
-printf("TIME #-4: %f\n", GetTime());
-
-    // Mesh creation ----->
-    size_t globalIdx = 0;
-    for(size_t x = 0; x < v.resolution-1; x++)
-    {
-        for(size_t y = 0; y < layersCnt; y++)
-        {
-            if (y > 0)
-            {
-
-                float* vertexSlice = &m.vertices[globalIdx*9];
-
-                const Vector3 cur = sideMeshVertex[x*layersCnt + y];
-                const Vector3 left = sideMeshVertex[(x+1)*layersCnt + y];
-                const Vector3 bottom = sideMeshVertex[(x+1)*layersCnt + y-1];
-
-
-                vertexSlice[0] = cur.x;
-                vertexSlice[1] = cur.y;
-                vertexSlice[2] = cur.z;
-                vertexSlice[3] = left.x;
-                vertexSlice[4] = left.y;
-                vertexSlice[5] = left.z;
-                vertexSlice[6] = bottom.x;
-                vertexSlice[7] = bottom.y;
-                vertexSlice[8] = bottom.z;
-
-                #if CALC_NORMALS_WHEN_GENERATE
-                Vector2* sideMeshVertexNormalsMapSlice = &sideMeshVertexNormalsMap[globalIdx*3];
-                Vector3 normal = Vector3CrossProduct(Vector3Subtract(left, cur), Vector3Subtract(bottom, cur));
-
-                sideMeshVertexNormals[x*layersCnt + y] = Vector3Add(sideMeshVertexNormals[x*layersCnt + y], normal);
-                sideMeshVertexNormals[(x+1)*layersCnt + y] = Vector3Add(sideMeshVertexNormals[(x+1)*layersCnt + y], normal);
-                sideMeshVertexNormals[(x+1)*layersCnt+(y-1)] = Vector3Add(sideMeshVertexNormals[(x+1)*layersCnt+(y-1)], normal);
-
-                if (x+1 == v.resolution-1)
-                {
-                    sideMeshVertexNormals[0+y] = Vector3Add(sideMeshVertexNormals[y], normal);
-                    sideMeshVertexNormals[0+y-1] = Vector3Add(sideMeshVertexNormals[y-1], normal);
-                }
-
-                sideMeshVertexNormalsMapSlice[0] = (Vector2){x,y};
-                sideMeshVertexNormalsMapSlice[1] = (Vector2){x+1,y};
-                sideMeshVertexNormalsMapSlice[2] = (Vector2){x+1,y-1};
-                #endif
-
-                globalIdx++;
-            }
-
-            if (y < layersCnt-1)
-            {
-
-                float* vertexSlice = &m.vertices[globalIdx*9];
-
-                const Vector3 cur = sideMeshVertex[x*layersCnt + y];
-                const Vector3 left = sideMeshVertex[(x+1)*layersCnt + y];
-                const Vector3 top = sideMeshVertex[x*layersCnt + y+1];
-
-                vertexSlice[0] = cur.x;
-                vertexSlice[1] = cur.y;
-                vertexSlice[2] = cur.z;
-                vertexSlice[3] = top.x;
-                vertexSlice[4] = top.y;
-                vertexSlice[5] = top.z;
-                vertexSlice[6] = left.x;
-                vertexSlice[7] = left.y;
-                vertexSlice[8] = left.z;
-
-                #if CALC_NORMALS_WHEN_GENERATE
-                Vector2* sideMeshVertexNormalsMapSlice = &sideMeshVertexNormalsMap[globalIdx*3];
-                Vector3 normal = Vector3CrossProduct(Vector3Subtract(top, cur), Vector3Subtract(left, cur));
-
-                sideMeshVertexNormals[x*layersCnt + y] = Vector3Add(sideMeshVertexNormals[x*layersCnt + y], normal);
-                sideMeshVertexNormals[(x+1)*layersCnt + y] = Vector3Add(sideMeshVertexNormals[(x+1)*layersCnt + y], normal);
-
-                if (x+1 == v.resolution-1) sideMeshVertexNormals[0+y] = Vector3Add(sideMeshVertexNormals[y], normal);
-
-                sideMeshVertexNormals[x*layersCnt+y+1] = Vector3Add(sideMeshVertexNormals[x*layersCnt+y+1], normal);
-
-                sideMeshVertexNormalsMapSlice[0] = (Vector2){x,y};
-                sideMeshVertexNormalsMapSlice[1] = (Vector2){x+1,y};
-                sideMeshVertexNormalsMapSlice[2] = (Vector2){x,y+1};
-                #endif
-
-                globalIdx++;
-            }
-
-        }
-
-    }
-
-    #if CALC_NORMALS_WHEN_GENERATE
-    for(size_t i = 0; i < side_vertex_floats_count/3; i++)
-    {
-        // Normals of side mesh
-        if (i < side_vertex_floats_count / 3){
-            Vector2 nIdx = sideMeshVertexNormalsMap[i];
-            Vector3 norm = Vector3Normalize(sideMeshVertexNormals[nIdx.x*layersCnt+nIdx.y]);
-            m.normals[0] = norm.x;
-            m.normals[1] = norm.y;
-            m.normals[2] = norm.z;
-        }
-    }
-    #endif
-
-    // Top and bottom base
-printf("TIME #-3: %f\n", GetTime());
-
-    {
-        size_t startingIdx = side_vertex_floats_count;
-        for(size_t x = 1; x < v.resolution; ++x)
-        {
-            Vector3 b = sideMeshVertex[layersCnt*(x-1)];
-            Vector3 c = sideMeshVertex[x*layersCnt];
-
-            m.vertices[startingIdx+0] = 0;
-            m.vertices[startingIdx+1] = 0;
-            m.vertices[startingIdx+2] = 0;
-
-            m.vertices[startingIdx+3] = b.x;
-            m.vertices[startingIdx+4] = b.y;
-            m.vertices[startingIdx+5] = b.z;
-
-
-            m.vertices[startingIdx+6] = c.x;
-            m.vertices[startingIdx+7] = c.y;
-            m.vertices[startingIdx+8] = c.z;
-
-            startingIdx += 9;
-        }
-
-        for(size_t x = 1; x < v.resolution; ++x)
-        {
-            Vector3 b = sideMeshVertex[x*layersCnt + layersCnt-1];
-            Vector3 c = sideMeshVertex[(x-1)*layersCnt + layersCnt-1];
-
-            m.vertices[startingIdx+0] = 0;
-            m.vertices[startingIdx+1] = layerHeightMm*(layersCnt-1);
-            m.vertices[startingIdx+2] = 0;
-
-            m.vertices[startingIdx+3] = b.x;
-            m.vertices[startingIdx+4] = b.y;
-            m.vertices[startingIdx+5] = b.z;
-
-
-            m.vertices[startingIdx+6] = c.x;
-            m.vertices[startingIdx+7] = c.y;
-            m.vertices[startingIdx+8] = c.z;
-
-            startingIdx += 9;
-        }
-    }
-printf("TIME #-2: %f\n", GetTime());
-
-    #if CALC_NORMALS_WHEN_GENERATE
-    // Normals of two bases
-    {
-        size_t startingIdx = side_vertex_floats_count/3;
-        for(size_t i=startingIdx; i < startingIdx+(v.resolution-1)*3; ++i)
-        {
-           m.normals[i*3] = 0;
-           m.normals[i*3+1] = -1;
-           m.normals[i*3+2] = 0;
-        }
-
-        startingIdx += (v.resolution-1)*3;
-
-        for(size_t i=startingIdx; i < startingIdx+(v.resolution-1)*3; ++i)
-        {
-           m.normals[i*3] = 0;
-           m.normals[i*3+1] = 1;
-           m.normals[i*3+2] = 0;
-        }
-    }
-    #endif
-
-printf("TIME #-1: %f\n", GetTime());
-
-    UploadMesh(&m, true);
-
-    if(model.meshCount > 0)
-    {
-        // NOTE: This will free normals as well!
-        RL_FREE(model.meshes[0].vertices);
-        model.meshes[0].vertices = 0;
-        model.meshes[0].normals = 0;
-        UnloadMesh(model.meshes[0]);
-        UnloadModel(model);
-    }
-
-    printf("TIME #0: %f\n", GetTime());
-
-    model = LoadModelFromMesh(m);
-    printf("TIME #1: %f\n", GetTime());
-
-    model.materials[0].shader = shader;
-    printf("TIME #2: %f\n", GetTime());
-    recalcNormals(model.meshes[0], smoothModel);
-    printf("TIME #3: %f\n", GetTime());
-
-    RL_FREE(tempBuffer);
-    printf("TIME #4: %f\n", GetTime());
-
-    lastDur = GetTime() - start;
-
-}
-
-Texture icons[4][2];
-Texture refreshIcon;
-
-const char* iconsDescr[4] = { "NEW VASE", "DOWNLOAD THIS VASE", "VASE SETTINGS", "NOISE SETTINGS"};
 
 int main()
 {
@@ -569,12 +168,16 @@ int main()
     InitWindow(screen_w, screen_h, "Vasaro");
     resize(screen_w, screen_h);
 
+    // Gui Style
+    GuiLoadStyle("resources/style.rgs");
+
     initVase();
     initGui();
 
-    font =  LoadFontEx("resources/Zector.ttf", 20, NULL, 0);  // Load font from file with extended parameters, use NULL for fontChars and 0 for glyphCount to load the default character set
+    // Font used by left menu
+    font =  LoadFontEx("resources/Zector.ttf", 20, NULL, 0);
 
-
+    // Icons used by left menu
     icons[0][1] = LoadTexture("resources/icons/new.empty.png");
     icons[0][0] = LoadTexture("resources/icons/new.png");
 
@@ -589,9 +192,7 @@ int main()
 
     refreshIcon = LoadTexture("resources/icons/refresh.png");
 
-    // Init resources
-    // Camera is fixed
-
+    // Init camera
 	camera = (Camera)
 	{
 		(Vector3){0,150,10}, 		// It is placed away from center
@@ -615,50 +216,96 @@ int main()
 	// Just one light.
 	light = CreateLight(LIGHT_POINT, (Vector3){6, 10, 10}, (Vector3){0, 0, 0}, (Color){255,255,255,255}, shader);
 
-    regenerate();
-
-
-    GuiLoadStyle("resources/style.rgs");
+    // Let's generate the first vase
+    genTiming = regenerate(smoothModel);
 
     emscripten_run_script("update_canvas_size();");
-    emscripten_set_main_loop(UpdateDrawFrame, 0, 1);
+    emscripten_set_main_loop(updateFrame, 0, 1);
 
     CloseWindow();        // Close window and OpenGL context
-
     return 0;
 }
 
-void UpdateDrawFrame()
+bool isMouseInputValidFor(int32_t window) { return activeWindow == INT32_MIN || activeWindow == window; }
+
+void updateFrame()
 {
 
     // First check: resize window if needed
-    if (IsWindowResized() || new_screen_w != screen_w ||new_screen_h != screen_h)
+    if (IsWindowResized() || required_screen_w != screen_w ||required_screen_h != screen_h)
     {
-        screen_w = new_screen_w;
-        screen_h = new_screen_h;
+        screen_w = required_screen_w;
+        screen_h = required_screen_h;
         SetWindowSize(screen_w, screen_h);
         initGui();
     }
 
     static float modelRotationX = 45;
     static float cameraHeight = 150;
-    static bool isOverGUI = false;
 
+    static bool isOverGUI = false;
     static bool wasButtonDown = false;
 
-    static int draggedWindow = -1;
-    int hittedWindow = -1;
-
-    if (v.toUpdate && autoRegenerate && IsMouseButtonUp(0))
-        regenerate();
-
+    if (vase.toUpdate && autoRegenerate && IsMouseButtonUp(0))
+        genTiming = regenerate(smoothModel);
 
     Vector2 mouse = GetMousePosition();
 
-    hittedWindow = -1;
-
     if (IsMouseButtonUp(0))
-        draggedWindow = -1;
+    {
+        activeWindow = INT32_MIN;
+        draggedWindow = INT32_MIN;
+    }
+
+    hittedWindow = INT32_MIN;
+
+    if (CheckCollisionPointRec(mouse, (Rectangle){0,0,48,screen_h}))
+        hittedWindow = -1;
+    else
+    {
+        for(int i = 0; i < 2; ++i)
+        {
+            if (isWindowVisible[zOrder[i]] && CheckCollisionPointRec(mouse, layoutRects[zOrder[i]]))
+            {
+                hittedWindow = zOrder[i];
+                break;
+            }
+        }
+    }
+
+    if (activeWindow == INT32_MIN)
+    {
+        if (IsMouseButtonDown(0) && !wasButtonDown)
+        {
+            activeWindow = hittedWindow;
+
+            if (activeWindow == LAY_WINDOW_SETTINGS)
+            {
+                zOrder[0] = LAY_WINDOW_SETTINGS;
+                zOrder[1] = LAY_WINDOW_NOISE;
+            }
+            else if (activeWindow == LAY_WINDOW_NOISE)
+            {
+                zOrder[1] = LAY_WINDOW_SETTINGS;
+                zOrder[0] = LAY_WINDOW_NOISE;
+            }
+
+            if (activeWindow == INT32_MIN)
+                activeWindow = -2;
+
+            if (hittedWindow >= 0)
+            {
+                Rectangle header = layoutRects[hittedWindow];
+                header.height = 24;
+
+                if (CheckCollisionPointRec(mouse, header))
+                {
+                    draggedWindow = hittedWindow;
+                }
+
+            }
+        }
+    }
 
     if (IsMouseButtonDown(0) && draggedWindow >= 0)
     {
@@ -666,89 +313,68 @@ void UpdateDrawFrame()
         {
             ancSettings.x += GetMouseDelta().x;
             ancSettings.y += GetMouseDelta().y;
-
-            if (ancSettings.x < 50) ancSettings.x = 50;
+            initGui();
+        }
+        else if (draggedWindow == LAY_WINDOW_NOISE)
+        {
+            ancNoise.x += GetMouseDelta().x;
+            ancNoise.y += GetMouseDelta().y;
             initGui();
         }
     }
 
-    for(int r = 0; r < 2; r++)
-    {
-        if (isWindowVisible[r] && CheckCollisionPointRec(mouse, layoutRects[r]))
-        {
-            hittedWindow = r;
+    isOverGUI = activeWindow >= 0;
 
-            Rectangle header = layoutRects[r];
-            header.height = 24;
-
-            if (IsMouseButtonDown(0) && !wasButtonDown && CheckCollisionPointRec(mouse, header))
-            {
-                draggedWindow = r;
-            }
-            break;
-        }
-    }
-
-
-
-    isOverGUI = hittedWindow >= 0 || draggedWindow >= 0;
-
-    if (!autoRegenerate && v.toUpdate &&
+    // Manual regeneration click
+    if (!autoRegenerate && vase.toUpdate &&
         !isOverGUI && !wasButtonDown && IsMouseButtonDown(0)
         && mouse.x > screen_w - 32- 20 && mouse.x < screen_w - 20
         && mouse.y > 20 && mouse.y < 20 + 32
         )
-        regenerate();
+        genTiming = regenerate(smoothModel);
 
+    // Move model
     {
-        // Move model
+        static float speedX = 0;
+        if (IsMouseButtonDown(0) && activeWindow < -1)
         {
-            static float speedX = 0;
-            if (IsMouseButtonDown(0) && !isOverGUI)
             {
-                {
-                    Vector2 delta = GetMouseDelta();
-                    if (fabs(delta.x) < 5) speedX = 0;
-                    else speedX = delta.x;
+                Vector2 delta = GetMouseDelta();
+                if (fabs(delta.x) < 5) speedX = 0;
+                else speedX = delta.x;
 
-                    if (speedX > 40) speedX = 40;
-                    else if (speedX < -40) speedX = -40;
+                if (speedX > 40) speedX = 40;
+                else if (speedX < -40) speedX = -40;
 
-                    modelRotationX += delta.x*1.0f/3.5;
-                    cameraHeight += delta.y*1.0f;
+                modelRotationX += delta.x*1.0f/3.5;
+                cameraHeight += delta.y*1.0f;
 
-                    if (cameraHeight > 200) cameraHeight = 200;
-                    if (cameraHeight < -200) cameraHeight = -200;
-                }
-
+                if (cameraHeight > 200) cameraHeight = 200;
+                if (cameraHeight < -200) cameraHeight = -200;
             }
-            else
-            {
-                modelRotationX += speedX*1.0f/4;
 
-                float delta = 20*GetFrameTime();
-                if (speedX < 0) delta *= -1;
+        }
+        else
+        {
+            modelRotationX += speedX*1.0f/4;
 
-                if (fabs(delta) > fabs(speedX)) speedX = 0;
-                else speedX -= delta;
+            float delta = 20*GetFrameTime();
+            if (speedX < 0) delta *= -1;
 
-                if (fabs(speedX) < 0.1)
-                    speedX = 0;
-            }
+            if (fabs(delta) > fabs(speedX)) speedX = 0;
+            else speedX -= delta;
+
+            if (fabs(speedX) < 0.1)
+                speedX = 0;
         }
     }
 
-    //recalcNormals(model.meshes[0], 1);
-
     // Update view
     {
-        //camera.position.y -= GetFrameTime();
         camera.position = (Vector3){ 160*cos(DEG2RAD*modelRotationX), cameraHeight,sin(DEG2RAD*modelRotationX)*160};
         light.position = camera.position;
         light.position.x += 5;
         light.position.y += 2;
-
-
 
         UpdateCamera(&camera);
 
@@ -769,17 +395,17 @@ void UpdateDrawFrame()
 
             DrawGrid(10, 19);
 
-            DrawModelEx(model, (Vector3){0,0,0}, (Vector3){0,1,0}, 0, (Vector3){1,1,1}, colors[v.color]);
-            //DrawModel(model, (Vector3){0,0,0}, 1, colors[1]);
+            //DrawModelEx(model, (Vector3){0,0,0}, (Vector3){0,1,0}, 0, (Vector3){1,1,1}, colors[vase.color]);
+            DrawModel(model, (Vector3){0,0,0}, 1, colors[vase.color]);
             EndMode3D();
         }
 
-        if (v.toUpdate && !autoRegenerate)
+        if (vase.toUpdate && !autoRegenerate)
             DrawTexture(refreshIcon, screen_w - 32 - 20, 20, (Color){200,200,200,100});
 
         // Draw UI
 
-
+        renderGui();
 
         Color c = {100,100,100,200};
         Color c1 = {180,180,180,200};
@@ -788,7 +414,7 @@ void UpdateDrawFrame()
 
         for(int i = 0; i < 4; ++i)
         {
-            if (CheckCollisionPointRec(mouse, (Rectangle){8,8*(i+1)+40*i,32,32}))
+            if (isMouseInputValidFor(-1) && CheckCollisionPointRec(mouse, (Rectangle){8,8*(i+1)+40*i,32,32}))
             {
                 DrawTexture(icons[i][0],8,8*(i+1)+40*i,c1);
                 DrawTextPro(font, iconsDescr[i], (Vector2) {33, 210}, (Vector2) {0, 0}, 90, 20, 3, (Color){180,180,180,200});
@@ -798,14 +424,17 @@ void UpdateDrawFrame()
                     switch(i)
                     {
                         case 0:
-                            BtnNew();
+                            onButtonNew();
                             break;
 
                         case 1:
-                            BtnExport();
+                            onButtonExport();
                             break;
 
                         case 2:
+                            zOrder[0] = LAY_WINDOW_SETTINGS;
+                            zOrder[1] = LAY_WINDOW_NOISE;
+
                             isWindowVisible[LAY_WINDOW_SETTINGS] = true;
                             ancSettings.x = 50;
                             ancSettings.y = 8*(i+1)+40*i;
@@ -813,6 +442,13 @@ void UpdateDrawFrame()
                             break;
 
                         case 3:
+                            zOrder[1] = LAY_WINDOW_SETTINGS;
+                            zOrder[0] = LAY_WINDOW_NOISE;
+
+                            isWindowVisible[LAY_WINDOW_NOISE] = true;
+                            ancNoise.x = 50;
+                            ancNoise.y = 8*(i+1)+40*i;
+                            initGui();
                             break;
                     }
                 }
@@ -823,144 +459,48 @@ void UpdateDrawFrame()
                 DrawTexture(icons[i][1],8,8*(i+1)+40*i,c);
         }
 
-        renderGui();
+
+        int noiseCount = 0;
+
+        for(int i = 0; i < MAX_NOISES; i++)
+        {
+            if (vase.noise[i].enabled == true) noiseCount++;
+            else break;
+        }
+
+        if (noiseCount > 0)
+        {
+            char countText[2] = {0};
+            snprintf(countText, 2, "%d", noiseCount);
+            DrawCircle(35, 8*3+40*3+32, 8, (Color){150,20,20,220});
+            DrawText(countText, 35-3,8*3+40*3+32-4, 10, RAYWHITE );
+        }
 
         static bool lastEditingState = false;
 
         if (lastEditingState != isEditing())
         {
             lastEditingState = isEditing();
-            if (lastEditingState == false) v.toUpdate = true;
+            if (lastEditingState == false) vase.toUpdate = true;
         }
 
         char stats[200];
-        snprintf(stats, 200, "%lu TRIANGLES GENERATED IN %0.3fs", model.meshes[0].triangleCount, lastDur);
+        snprintf(stats, 200, "%d TRIANGLES GENERATED IN %0.3fs", model.meshes[0].triangleCount, genTiming);
         DrawText(stats, 60, screen_h - 20, 10, (Color){230,230,230,200});
     EndDrawing();
+
 
     wasButtonDown = IsMouseButtonDown(0);
 
     //----------------------------------------------------------------------------------
 }
 
-typedef struct {
-    Vector3 key;
-    Vector3 value;
-} V3KeyValue;
 
-int v3_hashmap_compare(const void *a, const void *b, void *udata) {
-    const float *ua = a;
-    const float *ub = b;
-    return !(ua[0] == ub[0] && ua[1] == ub[1] && ua[2] == ub[2]);
-}
 
-uint64_t v3_hashmap_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    const float *toHash = item;
-    float k = (toHash[0]+10000*toHash[1]+1000000*toHash[2]);
-    uint32_t h = *((uint32_t*)(&k));
-    return ((uint64_t)(h));
-}
-
-void recalcNormals(Mesh mesh, int enabled)
+void onButtonExport()
 {
-
-    struct hashmap *linkedNormals;
-
-    if (enabled)
-        linkedNormals = hashmap_new(sizeof(V3KeyValue), 0, 0, 0, v3_hashmap_hash, v3_hashmap_compare, NULL, NULL);
-
-    for(size_t idx = 0; idx < mesh.vertexCount * 3; idx+=9 )
-	{
-        float *tri = &(mesh.vertices[idx]);
-
-        Vector3 v1 = (Vector3){tri[0], tri[1], tri[2]};
-        Vector3 v2 = (Vector3){tri[3], tri[4], tri[5]};
-        Vector3 v3 = (Vector3){tri[6], tri[7], tri[8]};
-
-		Vector3 normalV1 = Vector3CrossProduct((Vector3Subtract(v2,v1)), Vector3Subtract(v3,v1));
-		Vector3 normalV2 = Vector3CrossProduct((Vector3Subtract(v3,v2)), Vector3Subtract(v1,v2));
-		Vector3 normalV3 = Vector3CrossProduct((Vector3Subtract(v1,v3)), Vector3Subtract(v2,v3));
-
-		Vector3 sum = Vector3Add(Vector3Add(normalV1, normalV2), normalV3);
-
-		if (enabled)
-		{
-			{
-				V3KeyValue *item = hashmap_get(linkedNormals, &v1);
-				if (item == NULL) hashmap_set(linkedNormals, &(V3KeyValue){ v1, sum });
-				else
-                {
-                    item->value.x += sum.x;
-                    item->value.y += sum.y;
-                    item->value.z += sum.z;
-                }
-			}
-
-			{
-				V3KeyValue *item = hashmap_get(linkedNormals, &v2);
-				if (item == NULL) hashmap_set(linkedNormals, &(V3KeyValue){ v2, sum });
-				else
-                {
-                    item->value.x += sum.x;
-                    item->value.y += sum.y;
-                    item->value.z += sum.z;
-                }
-			}
-
-			{
-				V3KeyValue *item = hashmap_get(linkedNormals, &v3);
-				if (item == NULL) hashmap_set(linkedNormals, &(V3KeyValue){ v3, sum });
-				else
-                {
-                    item->value.x += sum.x;
-                    item->value.y += sum.y;
-                    item->value.z += sum.z;
-                }
-			}
-		}
-
-		else
-
-		{
-			Vector3 norm = Vector3Normalize(sum);
-
-			for(int k = 0; k < 3; ++k)
-            {
-				mesh.normals[idx + k*3 + 0] = norm.x;
-                mesh.normals[idx + k*3 + 1] = norm.y;
-                mesh.normals[idx + k*3 + 2] = norm.z;
-            }
-
-		}
-
-	}
-
-	if(enabled)
-	{
-		size_t iter = 0;
-        void *item;
-        while (hashmap_iter(linkedNormals, &iter, &item)) {
-            V3KeyValue *v = item;
-            v->value = Vector3Normalize(v->value);
-        }
-
-        for(size_t idx = 0; idx < mesh.vertexCount * 3; idx+=3 )
-        {
-            float *v = &(mesh.vertices[idx]);
-            V3KeyValue *item = hashmap_get(linkedNormals, (V3KeyValue*)v);
-            memcpy(&(mesh.normals[idx]), &item->value, sizeof(float)*3);
-        }
-
-        hashmap_free(linkedNormals);
-	}
-
-    UpdateMeshBuffer(mesh, 2, mesh.normals, mesh.vertexCount*3*sizeof(float), 0);
-}
-
-void BtnExport()
-{
-    if (v.toUpdate)
-        regenerate();
+    if (vase.toUpdate)
+        genTiming = regenerate(smoothModel);
 
     uint32_t        triCount    = model.meshes[0].vertexCount / 3;
     unsigned int    FILE_SIZE   = 80 + sizeof(uint32_t) + (sizeof(float)*3 + sizeof(float)*9 + sizeof(uint16_t)) * triCount;
@@ -1009,6 +549,7 @@ void BtnExport()
 
 void initGui(void)
 {
+    // SETTINGS
     layoutRects[LAY_WINDOW_SETTINGS] = (Rectangle){ ancSettings.x + 8, ancSettings.y + 0, 360, 435 };
     layoutRects[LAY_TEXT_RADIUS] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 40, 64, 24 };
     layoutRects[LAY_TEXT_HEIGHT] = (Rectangle){ ancSettings.x + 116, ancSettings.y + 72, 64, 24 };
@@ -1029,17 +570,19 @@ void initGui(void)
 
     layoutRects[LAY_RENDERING_GROUP] = (Rectangle) { ancSettings.x + 20, ancSettings.y + 280, 160, 140};
     Vector2 ancRendering = { layoutRects[LAY_RENDERING_GROUP].x + 10, layoutRects[LAY_RENDERING_GROUP].y + 10 };
-    layoutRects[LAY_COMBO_COLORS] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10, 120, 24 };
-    layoutRects[LAY_SMOOTH] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10 + 40, 120, 24 };
-    layoutRects[LAY_AUTOREGEN] = (Rectangle){ ancRendering.x + 10,  ancRendering.y + 10 + 40*2, 120, 24 };
+    layoutRects[LAY_COMBO_COLORS] = (Rectangle){ ancRendering.x + 5,  ancRendering.y + 10, 130, 24 };
+    layoutRects[LAY_SMOOTH] = (Rectangle){ ancRendering.x + 5,  ancRendering.y + 10 + 40, 130, 24 };
+    layoutRects[LAY_AUTOREGEN] = (Rectangle){ ancRendering.x + 5,  ancRendering.y + 10 + 40*2, 130, 24 };
 
-
-
-
+    // NOISE
+    layoutRects[LAY_WINDOW_NOISE] = (Rectangle){ ancNoise.x + 8, ancNoise.y + 0, 360, 435 };
+    layoutRects[LAY_DROPDOWN_NOISE] = (Rectangle) { ancNoise.x + 10 + 8, ancNoise.y + 8 + 24 + 8, 160, 24};
+    layoutRects[LAY_BUTTON_ADD_NOISE] = (Rectangle){ ancNoise.x + 10 + 160 + 8*2 , ancNoise.y + 8 + 24 + 8, 80, 24};
+    layoutRects[LAY_BUTTON_REMOVE_NOISE] = (Rectangle){ ancNoise.x + 10 + 160 + 8*3 + 80 , ancNoise.y + 8 + 24 + 8, 80, 24};
 
 }
 
-void BtnNew()
+void onButtonNew()
 {
     initVase();
     isWindowVisible[0] = false;
@@ -1053,104 +596,163 @@ bool vaseRadiusEditMode = false;
 bool showProfileWindow = false;
 bool vaseProfileDepthEditMode = false;
 
+bool noiseDropdownEditMode = false;
+
 bool isEditing()
 {
    return vaseProfileDepthEditMode || vaseHeightEditMode || vaseLayerHeightEditMode || vasePointsEditMode || vaseRadiusEditMode;
 }
 
-void renderGui()
+
+void renderNoiseWindow()
 {
-    //bool isProfileWindowOpen = showProfileWindow;
+    static int selectedNoise = 0;
+
+    if (!isWindowVisible[LAY_WINDOW_NOISE]) return;
+
+    if (!isMouseInputValidFor(LAY_WINDOW_NOISE) || hittedWindow != LAY_WINDOW_NOISE) GuiLock();
+    else GuiUnlock();
+
+
+    isWindowVisible[LAY_WINDOW_NOISE] = !GuiWindowBox(layoutRects[LAY_WINDOW_NOISE], "NOISE SETTINGS");
+
+
+    int noiseCount = 0;
+    bool hasNoise =  (vase.noise[0].enabled);
+
+    char items[(10+7)*8] = {0};
+
+    if (hasNoise)
+    {
+        int pos = 0;
+        for(int i = 0; i < MAX_NOISES; i++)
+        {
+            if (vase.noise[i].enabled == true)
+            {
+                noiseCount++;
+                pos += snprintf(&items[pos], 80, "NOISE #%zu;", vase.noise[i].noiseId);
+            }
+            else break;
+        }
+
+        items[strlen(items)-1] = 0;
+    }
+
+    if (hasNoise) GuiEnable();
+    else GuiDisable();
+
+    if (GuiDropdownBox(layoutRects[LAY_DROPDOWN_NOISE], items, &selectedNoise, noiseDropdownEditMode) ) noiseDropdownEditMode = !noiseDropdownEditMode;
+
+
+
+    if (noiseCount < 8) GuiEnable();
+    else GuiDisable();
+    if (GuiButton(layoutRects[LAY_BUTTON_ADD_NOISE], "ADD")) {
+        vase.noise[noiseCount].enabled = true;
+        vase.noise[noiseCount].height = 5;
+        vase.noise[noiseCount].seed = GetRandomValue(0, INT32_MAX);
+        vase.noise[noiseCount].noiseId = globalNoiseId++;
+        selectedNoise = noiseCount;
+        vase.toUpdate = true;
+    }
+
+    if (noiseCount > 0) GuiEnable();
+    else GuiDisable();
+    if (GuiButton(layoutRects[LAY_BUTTON_REMOVE_NOISE], "REMOVE")) {
+
+        if (selectedNoise < MAX_NOISES - 1)
+            memmove(&vase.noise[selectedNoise], &vase.noise[selectedNoise+1], (MAX_NOISES - selectedNoise - 1)*sizeof(Noise));
+
+        vase.noise[MAX_NOISES - 1].enabled = false;
+
+        selectedNoise = -1;
+        vase.toUpdate = true;
+    }
+
+    GuiEnable();
+
+}
+
+void renderSettingsWindow()
+{
+    if (!isWindowVisible[LAY_WINDOW_SETTINGS]) return;
 
     static bool profileChanged = false;
 
-    //if (isProfileWindowOpen) GuiDisable();
+    if (!isMouseInputValidFor(LAY_WINDOW_SETTINGS) || hittedWindow != LAY_WINDOW_SETTINGS) GuiLock();
+    else GuiUnlock();
 
-    if (isWindowVisible[LAY_WINDOW_SETTINGS])
+
+    isWindowVisible[LAY_WINDOW_SETTINGS] = !GuiWindowBox(layoutRects[LAY_WINDOW_SETTINGS], "VASE SETTINGS");
+    if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS (MM) ", &vase.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
+    if (GuiValueBox(layoutRects[LAY_TEXT_HEIGHT], "HEIGHT (MM) ", &vase.height, VASE_HEIGHT_MIN, VASE_HEIGHT_MAX, vaseHeightEditMode)) vaseHeightEditMode = !vaseHeightEditMode;
+    if (GuiValueBox(layoutRects[LAY_TEXT_POINTS], "BASE VERTICES ", &vase.resolution, VASE_RESOLUTION_MIN, VASE_RESOLUTION_MAX, vasePointsEditMode)) vasePointsEditMode = !vasePointsEditMode;
+
+    int maxLayers = 1000*vase.height;
+    if (maxLayers < VASE_LAYER_HEIGHT_MIN) maxLayers = vase.layerHeight;
+    if (GuiValueBox(layoutRects[LAY_TEXT_LAYERH], "LAYER (MICRON) ", &vase.layerHeight, VASE_LAYER_HEIGHT_MIN, maxLayers, vaseLayerHeightEditMode)) vaseLayerHeightEditMode = !vaseLayerHeightEditMode;
+
+
+    GuiGroupBox(layoutRects[LAY_PROFILE_GROUP], "PROFILE");
+    if (GuiValueBox(layoutRects[LAY_BUTTON_PROFILE_THICKNESS], "DEPTH ", &vase.profileDepth, 0, VASE_MAX_PROFILE_DEPTH, vaseProfileDepthEditMode)) vaseProfileDepthEditMode = !vaseProfileDepthEditMode;
+
+    bool isStillOver = false;
+    for(size_t i = 0; i < 10; i++)
     {
-        isWindowVisible[LAY_WINDOW_SETTINGS] = !GuiWindowBox(layoutRects[LAY_WINDOW_SETTINGS], "VASE SETTINGS");
-        if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS (MM) ", &v.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
-        if (GuiValueBox(layoutRects[LAY_TEXT_HEIGHT], "HEIGHT (MM) ", &v.height, VASE_HEIGHT_MIN, VASE_HEIGHT_MAX, vaseHeightEditMode)) vaseHeightEditMode = !vaseHeightEditMode;
-        if (GuiValueBox(layoutRects[LAY_TEXT_POINTS], "BASE VERTICES ", &v.resolution, VASE_RESOLUTION_MIN, VASE_RESOLUTION_MAX, vasePointsEditMode)) vasePointsEditMode = !vasePointsEditMode;
+        int32_t old = vase.profile[i];
+        vase.profile[i] = GuiSlider(layoutRects[LAY_SCROLL_PROFILE_0 + i], "", "", vase.profile[i], 0, 1000);
+        if (old != vase.profile[i]) profileChanged = true;
 
-        int maxLayers = 1000*v.height;
-        if (maxLayers < VASE_LAYER_HEIGHT_MIN) maxLayers = v.layerHeight;
-        if (GuiValueBox(layoutRects[LAY_TEXT_LAYERH], "LAYER (MICRON) ", &v.layerHeight, VASE_LAYER_HEIGHT_MIN, maxLayers, vaseLayerHeightEditMode)) vaseLayerHeightEditMode = !vaseLayerHeightEditMode;
-
-
-
-
-        GuiGroupBox(layoutRects[LAY_PROFILE_GROUP], "PROFILE");
-
-        if (GuiValueBox(layoutRects[LAY_BUTTON_PROFILE_THICKNESS], "DEPTH ", &v.profileDepth, 1, v.radius, vaseProfileDepthEditMode)) vaseProfileDepthEditMode = !vaseProfileDepthEditMode;
-
-        bool isStillOver = false;
-        for(size_t i = 0; i < 10; i++)
-        {
-            int32_t old = v.profile[i];
-            v.profile[i] = GuiSlider(layoutRects[LAY_SCROLL_PROFILE_0 + i], "", "", v.profile[i], 0, 1000);
-            if (old != v.profile[i]) profileChanged = true;
-
-            if(!isStillOver && CheckCollisionPointRec(GetMousePosition(), layoutRects[LAY_SCROLL_PROFILE_0 +i]) && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
-            {
-                isStillOver = true;
-
-            }
-
-        }
-
-        GuiGroupBox(layoutRects[LAY_RENDERING_GROUP], "RENDERING");
-        v.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", v.color);
-
-        bool wasSmooth = smoothModel;
-        smoothModel = GuiToggle(layoutRects[LAY_SMOOTH], "SMOOTH MODEL", smoothModel);
-        if (wasSmooth != smoothModel) v.toUpdate = true;
-
-        autoRegenerate = GuiToggle(layoutRects[LAY_AUTOREGEN], "AUTO REGENERATE", autoRegenerate);
-
-
-        if (!isStillOver && profileChanged)
-        {
-            v.toUpdate = true;
-            profileChanged = false;
-        }
+        if(!isStillOver && CheckCollisionPointRec(GetMousePosition(), layoutRects[LAY_SCROLL_PROFILE_0 +i]) && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+            isStillOver = true;
     }
+
+    GuiGroupBox(layoutRects[LAY_RENDERING_GROUP], "RENDERING");
+    vase.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", vase.color);
+
+    bool wasSmooth = smoothModel;
+    smoothModel = GuiToggle(layoutRects[LAY_SMOOTH], "SMOOTH MODEL", smoothModel);
+    if (wasSmooth != smoothModel) vase.toUpdate = true;
+
+    autoRegenerate = GuiToggle(layoutRects[LAY_AUTOREGEN], "AUTO REGENERATE", autoRegenerate);
+
+
+    if (!isStillOver && profileChanged)
+    {
+        vase.toUpdate = true;
+        profileChanged = false;
+    }
+
 
     if (!isEditing())
     {
-        if (v.radius < VASE_RADIUS_MIN) v.radius = VASE_RADIUS_MIN;
-        if (v.radius > VASE_RADIUS_MAX) v.radius = VASE_RADIUS_MAX;
+        if (vase.radius < VASE_RADIUS_MIN) vase.radius = VASE_RADIUS_MIN;
+        if (vase.radius > VASE_RADIUS_MAX) vase.radius = VASE_RADIUS_MAX;
 
-        if (v.layerHeight < VASE_LAYER_HEIGHT_MIN) v.layerHeight = VASE_LAYER_HEIGHT_MIN;
-        if (v.layerHeight > VASE_LAYER_HEIGHT_MAX) v.layerHeight = VASE_LAYER_HEIGHT_MAX;
+        if (vase.layerHeight < VASE_LAYER_HEIGHT_MIN) vase.layerHeight = VASE_LAYER_HEIGHT_MIN;
+        if (vase.layerHeight > VASE_LAYER_HEIGHT_MAX) vase.layerHeight = VASE_LAYER_HEIGHT_MAX;
 
-        if (v.height < VASE_HEIGHT_MIN) v.height = VASE_HEIGHT_MIN;
-        if (v.height > VASE_HEIGHT_MAX) v.height = VASE_HEIGHT_MAX;
+        if (vase.height < VASE_HEIGHT_MIN) vase.height = VASE_HEIGHT_MIN;
+        if (vase.height > VASE_HEIGHT_MAX) vase.height = VASE_HEIGHT_MAX;
 
-        if (v.resolution < VASE_RESOLUTION_MIN) v.resolution = VASE_RESOLUTION_MIN;
-        if (v.resolution > VASE_RESOLUTION_MAX) v.resolution = VASE_RESOLUTION_MAX;
+        if (vase.resolution < VASE_RESOLUTION_MIN) vase.resolution = VASE_RESOLUTION_MIN;
+        if (vase.resolution > VASE_RESOLUTION_MAX) vase.resolution = VASE_RESOLUTION_MAX;
+
+        if (vase.profileDepth > VASE_MAX_PROFILE_DEPTH) vase.profileDepth = VASE_MAX_PROFILE_DEPTH;
+        if (vase.profileDepth < 0) vase.profileDepth = 0;
     }
+}
 
-/*
-    if (isProfileWindowOpen)
+void renderGui()
+{
+    if (zOrder[0] == LAY_WINDOW_SETTINGS)
     {
-        GuiEnable();
-        if (GuiWindowBox(layoutRects[LAY_WINDOW_PROFILE], "PROFILE")) showProfileWindow = false;
-
-
-
-        GuiDisable();
+        renderNoiseWindow();
+        renderSettingsWindow();
     }
-
-    v.color = GuiComboBox(layoutRects[LAY_COMBO_COLORS], "YELLOW;WHITE;RED;GREEN;CYAN;MAGENTA;LILAC;GRAY", v.color);
-    if (GuiValueBox(layoutRects[LAY_TEXT_RADIUS], "RADIUS: ", &v.radius, VASE_RADIUS_MIN, VASE_RADIUS_MAX, vaseRadiusEditMode)) vaseRadiusEditMode = !vaseRadiusEditMode;
-
-
-
-
-    if (isProfileWindowOpen)
-        GuiEnable();
-
-        */
-
+    else
+    {
+        renderSettingsWindow();
+        renderNoiseWindow();
+    }
 }

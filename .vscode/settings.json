@@ -1,0 +1,7 @@
+{
+   "files.associations": {
+      "*.m": "c",
+      "opensimplexnoise.h": "c",
+      "raymath.h": "c"
+   }
+}
