@@ -436,8 +436,8 @@ void updateFrame()
                             zOrder[1] = LAY_WINDOW_NOISE;
 
                             isWindowVisible[LAY_WINDOW_SETTINGS] = true;
-                            ancSettings.x = 50;
-                            ancSettings.y = 8*(i+1)+40*i;
+                            ancSettings.x = 60;
+                            ancSettings.y = 10;
                             initGui();
                             break;
 
@@ -446,8 +446,8 @@ void updateFrame()
                             zOrder[0] = LAY_WINDOW_NOISE;
 
                             isWindowVisible[LAY_WINDOW_NOISE] = true;
-                            ancNoise.x = 50;
-                            ancNoise.y = 8*(i+1)+40*i;
+                            ancNoise.x = screen_w - layoutRects[LAY_WINDOW_NOISE].width - 20;
+                            ancNoise.y = 10;
                             initGui();
                             break;
                     }
