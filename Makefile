@@ -28,7 +28,7 @@ build/opensimplexnoise.o: src/noises/opensimplexnoise.c src/noises/opensimplexno
 build/simplexnoise.o: src/noises/simplexnoise.c src/noises/simplexnoise.h
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
 
-build/generator.o: src/generator.c src/generator.h build/simplexnoise.o build/hashmap.o
+build/generator.o: src/generator.c src/generator.h build/simplexnoise.o build/hashmap.o build/opensimplexnoise.o
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
 
 
