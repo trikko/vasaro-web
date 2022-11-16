@@ -29,7 +29,7 @@ build/simplexnoise.o: src/noises/simplexnoise.c src/noises/simplexnoise.h
 	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
 
 build/generator.o: src/generator.c src/generator.h build/simplexnoise.o build/hashmap.o build/opensimplexnoise.o
-	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB
+	emcc -c $< -o $@ -Os -Wall -DPLATFORM_WEB -Iext/raylib/src/ -Iext/raygui/src/
 
 
 vasaro-web: prebuild build/generator.o build/libraylib.a build/vasaro.o
