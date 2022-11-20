@@ -5,6 +5,7 @@ Italian archaic form of *vasaio* - a person who makes ceramic ware (i.e. "potter
 
 [Try it on your browser!](https://vasaro.art)
 
-## demo
+## demo (w/audio!)
 
-[![Vasaro preview](https://i.imgur.com/XFefgZc.png)](https://www.youtube.com/watch?v=lJR6sg-_HG4)
+https://user-images.githubusercontent.com/647157/202920813-9a5b53d1-333d-4dc2-9dcf-24c696826d22.mp4
+
