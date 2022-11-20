@@ -3,7 +3,7 @@
 [IPA](https://en.wiktionary.org/wiki/Wiktionary:International_Phonetic_Alphabet): /va'zarɔ/  
 Italian archaic form of *vasaio* - a person who makes ceramic ware (i.e. "potter")
 
-[Try it on your browser!](https://vasaro.art)
+[Try it in your browser!](https://vasaro.art)
 
 ## demo (w/audio!)
 
