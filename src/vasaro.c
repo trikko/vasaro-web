@@ -719,14 +719,14 @@ void renderNoiseWindow()
       if (isNoiseSelected)
       {
          int32_t old = vase.noise[selectedNoise].alpha[i];
-         vase.noise[selectedNoise].alpha[i] = GuiSlider(layoutRects[LAY_SCROLL_STRENGTH_0 + i], "", "", vase.noise[selectedNoise].alpha[i], 0, 1000);
+         vase.noise[selectedNoise].alpha[i] = GuiSliderBar(layoutRects[LAY_SCROLL_STRENGTH_0 + i], "", "", vase.noise[selectedNoise].alpha[i], 0, 1000);
          if (old != vase.noise[selectedNoise].alpha[i]) noiseChanged = true;
 
          if(!isStillOver && CheckCollisionPointRec(GetMousePosition(), layoutRects[LAY_SCROLL_STRENGTH_0 +i]) && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
             isStillOver = true;
       }
       else {
-         GuiSlider(layoutRects[LAY_SCROLL_STRENGTH_0 + i], "", "", 500, 0, 1000);
+         GuiSliderBar(layoutRects[LAY_SCROLL_STRENGTH_0 + i], "", "", 500, 0, 1000);
          isStillOver = false;
          noiseChanged = false;
       }
@@ -806,7 +806,7 @@ void renderSettingsWindow()
    for(size_t i = 0; i < 10; i++)
    {
       int32_t old = vase.profile[i];
-      vase.profile[i] = GuiSlider(layoutRects[LAY_SCROLL_PROFILE_0 + i], "", "", vase.profile[i], 0, 1000);
+      vase.profile[i] = GuiSliderBar(layoutRects[LAY_SCROLL_PROFILE_0 + i], "", "", vase.profile[i], 0, 1000);
       if (old != vase.profile[i]) profileChanged = true;
 
       if(!isStillOver && CheckCollisionPointRec(GetMousePosition(), layoutRects[LAY_SCROLL_PROFILE_0 +i]) && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
