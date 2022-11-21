@@ -144,6 +144,7 @@ void initVase()
    vase.resolution = 300;
    vase.layerHeight = 200;
    vase.color = 0;
+   vase.isEditing = false;
 
    vase.profileDepth = 10;
    for(size_t i = 0; i< 10; i++)
@@ -353,8 +354,8 @@ void updateFrame()
             modelRotationX += delta.x*1.0f/3.5;
             cameraHeight += delta.y*1.0f;
 
-            if (cameraHeight > 200) cameraHeight = 200;
-            if (cameraHeight < -200) cameraHeight = -200;
+            if (cameraHeight > vase.height*2) cameraHeight = vase.height*2;
+            if (cameraHeight < -vase.height*2) cameraHeight = -vase.height*2;
          }
 
       }
@@ -375,7 +376,16 @@ void updateFrame()
 
    // Update view
    {
-      camera.position = (Vector3){ 160*cos(DEG2RAD*modelRotationX), cameraHeight,sin(DEG2RAD*modelRotationX)*160};
+      static float maxBB;
+      if (vase.isEditing == false)
+      {
+         maxBB = vase.maxRadius * 2;
+         if (vase.height*1.5 > maxBB) maxBB = vase.height;
+         camera.target.y = vase.height / 2;
+      }
+
+      Vector3 cameraPos3 = (Vector3){ (maxBB * 2)*cos(DEG2RAD*modelRotationX), cameraHeight, (maxBB * 2)*sin(DEG2RAD*modelRotationX)};
+      camera.position = cameraPos3;
       light.position = camera.position;
       light.position.x += 5;
       light.position.y += 2;
@@ -486,6 +496,8 @@ void updateFrame()
          lastEditingState = isEditing();
          if (lastEditingState == false) vase.toUpdate = true;
       }
+
+      vase.isEditing = isEditing();
 
       char stats[200];
       snprintf(stats, 200, "%d TRIANGLES GENERATED IN %0.3fs", model.meshes[0].triangleCount, genTiming);
@@ -761,7 +773,7 @@ void renderNoiseWindow()
 
    if (!isEditing())
    {
-
+      //TODO: Default val
    }
 
    GuiEnable();

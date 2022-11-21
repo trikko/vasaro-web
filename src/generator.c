@@ -333,7 +333,6 @@ float regenerate(bool smooth)
    sideMeshVertexNormalsMap    = (Vector2*)(&tempBuffer[vase.resolution * layersCnt * 2]);
    #endif
 
-printf("TIME #-5: %f\n", GetTime());
 
    float noiseCoeff[MAX_NOISES][40];
 
@@ -343,6 +342,7 @@ printf("TIME #-5: %f\n", GetTime());
       naturalSpline(vase.noise[x].alpha, noiseCoeff[x]);
    }
 
+   vase.maxRadius = 0;
 
    for(size_t x = 0; x < vase.resolution; ++x)
    {
@@ -376,6 +376,7 @@ printf("TIME #-5: %f\n", GetTime());
 
          }
 
+         if (radius > vase.maxRadius) vase.maxRadius = radius;
 
          sideMeshVertex[idx] = (Vector3)
          {
@@ -389,7 +390,6 @@ printf("TIME #-5: %f\n", GetTime());
          #endif
       }
    }
-printf("TIME #-4: %f\n", GetTime());
 
    // Mesh creation ----->
    size_t globalIdx = 0;
@@ -496,7 +496,6 @@ printf("TIME #-4: %f\n", GetTime());
     #endif
 
     // Top and bottom base
-printf("TIME #-3: %f\n", GetTime());
 
    {
       size_t startingIdx = side_vertex_floats_count;
@@ -542,7 +541,6 @@ printf("TIME #-3: %f\n", GetTime());
          startingIdx += 9;
       }
    }
-printf("TIME #-2: %f\n", GetTime());
 
    #if CALC_NORMALS_WHEN_GENERATE
    // Normals of two bases
@@ -566,7 +564,6 @@ printf("TIME #-2: %f\n", GetTime());
    }
    #endif
 
-printf("TIME #-1: %f\n", GetTime());
 
    UploadMesh(&m, true);
 
@@ -580,18 +577,11 @@ printf("TIME #-1: %f\n", GetTime());
       UnloadModel(model);
    }
 
-   printf("TIME #0: %f\n", GetTime());
-
    model = LoadModelFromMesh(m);
-   printf("TIME #1: %f\n", GetTime());
-
    model.materials[0].shader = shader;
-   printf("TIME #2: %f\n", GetTime());
-   recalcNormals(model.meshes[0], smooth);
-   printf("TIME #3: %f\n", GetTime());
+      recalcNormals(model.meshes[0], smooth);
 
    RL_FREE(tempBuffer);
-   printf("TIME #4: %f\n", GetTime());
 
    return GetTime() - start;
 }

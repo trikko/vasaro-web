@@ -35,7 +35,9 @@ typedef struct {
    int32_t     profile[10];
    int32_t     profileDepth;
 
+   float       maxRadius;
    bool        toUpdate;
+   bool        isEditing;
 
    Noise       noise[MAX_NOISES];
 
