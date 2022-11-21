@@ -541,15 +541,15 @@ void onButtonExport()
       base[2] = 0;
 
       // Switching XYZ axes to match stl editors
-      base[3] = vbase[0];
-      base[4] = vbase[2];
-      base[5] = vbase[1];
-      base[6] = vbase[6];
-      base[7] = vbase[8];
-      base[8] = vbase[7];
-      base[9] = vbase[3];
-      base[10] = vbase[5];
-      base[11] = vbase[4];
+      base[3]  = -vbase[0];
+      base[4]  =  vbase[2];
+      base[5]  =  vbase[1];
+      base[6]  = -vbase[3];
+      base[7]  =  vbase[5];
+      base[8]  =  vbase[4];
+      base[9]  = -vbase[6];
+      base[10] =  vbase[8];
+      base[11] =  vbase[7];
    }
 
    SaveFileData("model.stl", content, FILE_SIZE);
